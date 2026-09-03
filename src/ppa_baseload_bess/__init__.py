@@ -1,3 +1,5 @@
 """PPA baseload firming with a battery energy storage system (BESS)."""
 
-__version__ = "0.1.0"
+from .model import init_model
+
+__all__ = ["init_model"]

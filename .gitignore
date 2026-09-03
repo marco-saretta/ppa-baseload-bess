@@ -35,6 +35,10 @@ outputs/
 multirun/
 .hydra/
 
+# Data (keep the folder, ignore its contents)
+data/*
+!data/.gitkeep
+
 # MkDocs
 site/
 
