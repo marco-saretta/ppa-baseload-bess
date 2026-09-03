@@ -1,0 +1,4 @@
+# Hydra configuration. Override on the command line, e.g.:
+#   uv run python main.py message="hi" seed=1
+message: "hello world"
+seed: 42
