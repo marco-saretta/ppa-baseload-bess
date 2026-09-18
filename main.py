@@ -1,14 +1,17 @@
 import gc
 
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
+
+from ppa_baseload_bess import Runner
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
-    """Resolve the config and construct the model as a smoke test."""
-    print(cfg)
+    """Resolve the config and run the pipeline as a smoke test."""
 
+    runner = Runner(cfg)
+    runner.run()
     gc.collect()
 
 
