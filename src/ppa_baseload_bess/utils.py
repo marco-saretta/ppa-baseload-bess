@@ -59,7 +59,7 @@ def stage(name: str, logger: logging.Logger):
     """
     token = _STAGE.set(name)
     start = time.perf_counter()
-    logger.info(f"start {name}")
+    logger.info(f"Start {name}")
     try:
         yield
         logger.info("done in %.1f s", time.perf_counter() - start)
