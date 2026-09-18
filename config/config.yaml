@@ -1,0 +1,11 @@
+# Hydra configuration. Override on the command line, e.g.:
+#   uv run python main.py seed=1
+
+defaults:
+  - paths: default
+  - simulations: default
+  - _self_
+
+# One scenario:     python main.py simulations=demo
+# Several in a row: python main.py --multirun simulations=defaulta,demo
+# All of them:      python main.py --multirun 'simulations=glob(*)'
