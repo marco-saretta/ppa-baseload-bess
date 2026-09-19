@@ -71,9 +71,7 @@ class DataPreprocessor:
 
         log.info(f"Saved spot prices to {out_path}")
 
-    def get_power_system_data(
-        self, start: str = "2025-01-01T00:00", end: str = "2026-09-17T00:00"
-    ):
+    def get_power_system_data(self, start: str = "2025-01-01T00:00", end: str = "2026-09-17T00:00"):
         out_path = self.data_dir / "power_system.csv"
         if out_path.exists():
             log.info(f"Power system data already downloaded at {out_path}, skipping")
