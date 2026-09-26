@@ -1,0 +1,6 @@
+# Simulation template - copy, rename, and place under config/simulations/
+# Reference with:  python main.py simulations=<name>
+
+# --- MAIN RUN CONFIG ----------------------------------------------------------
+
+label: default
