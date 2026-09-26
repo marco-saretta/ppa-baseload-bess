@@ -19,6 +19,7 @@ class DataPreprocessor:
         self.config_directories()
         self.get_spot_prices_data()
         self.get_power_system_data()
+        self.get_consumption_values()
 
     def config_directories(self):
         self.data_dir = Path(self.cfg.paths.data)
@@ -87,3 +88,20 @@ class DataPreprocessor:
         df.to_csv(path_or_buf=out_path, index=False)
 
         log.info(f"Saved power system data to {out_path}")
+
+    def get_consumption_values(self, start: str = '2025-01-01T00:00', end: str = '2026-09-17T00:00'):
+        out_path = self.data_dir / "consumption_values.csv"
+        if out_path.exists():
+            log.info(f"Consumer data already downloaded at {out_path}, skipping")
+            return
+
+        log.info("Start fetching consumer data")
+        df = self._fetch_energinet_dataset(
+            "ConsumptionConsumerCategoryHour",
+            start=start,
+            end=end,
+            sort="TimeDK DESC",
+        )
+        df.to_csv(path_or_buf=out_path, index=False)
+
+        log.info(f"Saved consumer data to {out_path}")
