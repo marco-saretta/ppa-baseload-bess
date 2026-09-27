@@ -1,10 +1,10 @@
-
-def cookie(flavour = "chocolate chip", shaepe = "round"):
+def cookie(flavour="chocolate chip", shaepe="round"):
 
     return f"Here is your {shaepe} {flavour} cookie!"
 
+
 class Cookie:
-    def __init__(self, flavour = "chocolate chip", shape = "round"):
+    def __init__(self, flavour="chocolate chip", shape="round"):
         self.flavour = flavour
         self.shape = shape
 
@@ -17,5 +17,3 @@ if __name__ == "__main__":
     print(cookie("oatmeal raisin", "square"))
     cookie1 = Cookie()
     cookie2 = Cookie("oatmeal raisin", "square")
-    
-
