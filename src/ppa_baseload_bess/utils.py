@@ -27,7 +27,7 @@ def setup_logging(log_dir: str = "logs", log_file: str = "ppa_baseload_bess.log"
     """
     logger = logging.getLogger("ppa_baseload_bess")
     if logger.handlers:
-        return  # already configured — avoid duplicate handlers on a second call
+        return  # already configured, avoid duplicate handlers on a second call
     logger.setLevel(level)
     logger.propagate = False  # Hydra's root handler would print every line twice
 
@@ -62,6 +62,6 @@ def stage(name: str, logger: logging.Logger):
     logger.info(f"Start {name}")
     try:
         yield
-        logger.info("done in %.1f s", time.perf_counter() - start)
+        logger.info("Done in %.1f s", time.perf_counter() - start)
     finally:
         _STAGE.reset(token)

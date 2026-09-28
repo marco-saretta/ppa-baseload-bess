@@ -1,0 +1,20 @@
+# @package data
+# Settings for DataPreprocessor. Override on the command line, e.g.:
+#   uv run python main.py data.preprocessor.timestep=1h
+
+preprocessor:
+  energinet_api_url: "https://api.energidataservice.dk/dataset"
+
+  # Query window shared by all downloads. Raw files are not re-downloaded if they
+  # exist, so delete data/raw/ after changing these.
+  start: "2025-01-01T00:00"
+  end: "2026-09-17T00:00"
+
+  # Time step of all preprocessed data (pandas offset alias, e.g. 15min, 1h).
+  timestep: "15min"
+
+  # Regions in the DK1 price area (Region Hovedstaden and Sjælland are DK2).
+  dk1_regions:
+    - "Region Midtjylland"
+    - "Region Nordjylland"
+    - "Region Syddanmark"

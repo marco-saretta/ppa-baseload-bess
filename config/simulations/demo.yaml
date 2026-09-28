@@ -1,3 +1,12 @@
 # --- MAIN RUN CONFIG ----------------------------------------------------------
 
 label: demo
+
+# --- SCENARIOS ----------------------------------------------------------------
+
+# Each scenario is `horizon_days` historical days drawn at random (with replacement).
+# Use horizon_days: 365 once a full year of 15-minute data is available.
+scenarios:
+  n_scenarios: 10
+  horizon_days: 7
+  seed: 42

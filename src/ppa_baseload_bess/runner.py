@@ -25,7 +25,7 @@ class Runner:
 
     def preprocess(self):
         with utils.stage("preprocess", log):
-            DataPreprocessor(self.cfg)
+            DataPreprocessor(self.cfg).run()
 
     def load_data(self):
         with utils.stage("load", log):

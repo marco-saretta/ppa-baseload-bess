@@ -3,6 +3,7 @@
 
 defaults:
   - paths: default
+  - data: default
   - simulations: default
   - _self_
 
