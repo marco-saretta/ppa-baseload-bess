@@ -146,7 +146,14 @@ class DataLoader:
         # Optional: a dict self.series_index = {name: i} makes the model code more readable,
         # e.g. self.data[self.series_index["spot_prices"]].
 
-        mmk
+        arrays = [self.frames[name].to_numpy() for name in self.series_names]
+
+        self.data = np.stack(arrays, axis= 0)
+
+        # store T and S for the model
+        _, self.n_timesteps, self.n_scenarios = self.data.shape
+
+        self.series_index = {name : i for i, name in enumerate(self.series_names)}
 
     def set_probabilities(self) -> None:
         """Probability of each scenario."""
