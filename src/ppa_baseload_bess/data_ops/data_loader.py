@@ -37,10 +37,10 @@ class DataLoader:
         self.read_scenarios()
         self.check_scenarios()
         self.build_tensor()
-        #self.set_probabilities()
+        self.set_probabilities()
 
-        n_series, T, S = self.data.shape
-        log.info(f"Loaded {n_series} series, {T} time steps, {S} scenariosfrom {self.scenario_dir}")
+        n_series, T, S = self.scenarios.shape
+        log.info(f"Loaded {n_series} series, {T} time steps, {S} scenarios from {self.scenario_dir}")
 
         # TODO: once the methods below are done, call them here in order:
         #   1. set_paths()
@@ -87,7 +87,7 @@ class DataLoader:
             name: pd.read_csv(self.scenario_dir / f"{name}.csv", index_col = "t")
             for name in self.series_names
         }       
-        log.info(f"Read {len(self.frames)} from {self.scenario_dir}")         
+        log.info(f"Read {len(self.frames)} series from {self.scenario_dir}")         
 
     def check_scenarios(self) -> None:
         """Make sure the files fit together before stacking them."""
@@ -109,11 +109,11 @@ class DataLoader:
 
         for name, frame in self.frames.items():
             if frame.shape != ref.shape:
-                raise ValueError(f"{name}.csv has {frame.shape}, when the expected is {ref.shape}, like {ref.shape}.csv")
+                raise ValueError(f"{name}.csv has {frame.shape}, when the expected is {ref.shape}, like {ref_name}.csv")
             if not frame.columns.equals(ref.columns):
-                raise ValueError(f"{name}.csv has different scenario columns or order than {ref}.csv")
+                raise ValueError(f"{name}.csv has different scenario columns or order than {ref_name}.csv")
             if not frame.index.equals(ref.index):
-                raise ValueError(f"{name}.csv has different index than {ref}.csv")
+                raise ValueError(f"{name}.csv has different index than {ref_name}.csv")
             if frame.isna().to_numpy().any():
                 raise ValueError(f"{name}.csv contains missing values")
 
@@ -148,10 +148,10 @@ class DataLoader:
 
         arrays = [self.frames[name].to_numpy() for name in self.series_names]
 
-        self.data = np.stack(arrays, axis= 0)
+        self.scenarios = np.stack(arrays, axis=0)
 
         # store T and S for the model
-        _, self.n_timesteps, self.n_scenarios = self.data.shape
+        _, self.n_timesteps, self.n_scenarios = self.scenarios.shape
 
         self.series_index = {name : i for i, name in enumerate(self.series_names)}
 
@@ -160,3 +160,5 @@ class DataLoader:
         # TODO: the scenarios are drawn by bootstrap, so they are equally likely.
         #   Store a numpy array self.probabilities of length S that sums to 1.
         #   The model will need it for the expected value and for CVaR.
+
+        self.probabilities = np.ones(self.n_scenarios)/self.n_scenarios

@@ -30,6 +30,7 @@ class Runner:
     def load_data(self):
         with utils.stage("load", log):
             self.data = DataLoader(self.cfg)
+            self.data.run()
 
     def build_model(self):
         if self.data is None:
