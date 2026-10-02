@@ -36,6 +36,7 @@ class Runner:
             raise RuntimeError("build_model() needs data: call load_data() first")
         with utils.stage("build", log):
             self.model = Model(self.cfg, self.data)
+            self.model.build_model()
 
     def solve_model(self):
         with utils.stage("solve", log):
