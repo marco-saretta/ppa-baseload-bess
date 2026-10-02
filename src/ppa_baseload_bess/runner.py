@@ -1,7 +1,7 @@
 from omegaconf import DictConfig
 
 from . import utils
-from .data_ops import DataPreprocessor, DataLoader, DataExporter, DataVisualizer
+from .data_ops import DataExporter, DataLoader, DataPreprocessor, DataVisualizer
 from .model import Model
 
 log = utils.get_logger(__name__)
@@ -46,6 +46,7 @@ class Runner:
     def export_data(self):
         with utils.stage("export", log):
             self.exporter = DataExporter(self.cfg, self.model)
+            self.exporter.run()
 
     def visualize_data(self):
         with utils.stage("visualize", log):

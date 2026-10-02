@@ -10,3 +10,28 @@ scenarios:
   n_scenarios: 10
   horizon_days: 7
   seed: 42
+
+# --- GENERATOR ----------------------------------------------------------------
+
+# Installed capacity of the solar plant selling the PPA (MW).
+generator:
+  solar_mw: 50
+
+# --- BUYER --------------------------------------------------------------------
+
+# Average load of the buyer of the PPA (MW).
+buyer:
+  load_mw: 20
+
+# --- CONTRACT -----------------------------------------------------------------
+
+# Bounds of the strike price S (EUR/MWh).
+contract:
+  strike_lower: 0
+  strike_upper: 200
+
+  M_lower: 0
+  M_upper: 100
+
+  # Bargaining power tau of the generator in the Nash objective, 0..1. The buyer has 1 - tau.
+  tau: 0.5

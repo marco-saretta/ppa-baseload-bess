@@ -1,11 +1,22 @@
-"""Construction of the optimization model."""
-
 import logging
 
 import gurobipy as gp
+from gurobipy import GRB
 from omegaconf import DictConfig
 
+from types import SimpleNamespace
+
 logger = logging.getLogger(__name__)
+
+# Deterministic model: one scenario, so every time series is a vector of length T and every
+# utility is a scalar.
+#
+# The task: complete the deterministic model. The generator side is done, your job is the
+# buyer side: follow the TODOs in order (1 to 6), the generator code right above each one
+# shows the pattern. Run `uv run python main.py` after every step and check
+# results/<label>/variables.csv.
+#
+# If you manage: the stochastic model (TODO 7). Only start it once the deterministic one works.
 
 
 class Model:
@@ -14,10 +25,11 @@ class Model:
 
         Decision variables and constraints are added by later build steps.
         """
-        self.cfg = cfg
-        self.data = data
-        self.m = gp.Model("ppa_baseload_bess")
-        logger.info("Initialized Gurobi model %r", self.model.ModelName)
+        self.cfg = cfg  # Get config dictionary
+        self.data = data  # Get data object
+
+        # Intialize gurobipy model
+        self.setup_gurobi_model()
 
     def build_model(self):
         self.add_parameters()
@@ -25,33 +37,118 @@ class Model:
         self.add_constraints()
         self.add_objective()
 
+    def setup_gurobi_model(self):
+        """Initialise the Gurobi model with solver parameters and the variable namespace."""
+        self.m = gp.Model("ppa_baseload_bess")
+        self.m.Params.NonConvex = 2  # Allow bilinear terms (S×M, gamma×S)
+        self.m.Params.FeasibilityTol = 1e-6  # Constraint violation tolerance
+        self.m.Params.OutputFlag = 0  # Suppress Gurobi console output
+        self.m.Params.TimeLimit = 420  # Hard stop at 7 minutes
+        
+        logger.info("Initialized Gurobi model %r", self.m.ModelName)
+
     def add_parameters(self):
         logger.info("Start adding parameters")
-        self.d_G = None
-        self.d_L = None
-        #self.spot_prices = self.data.
+        sc = self.data.sc  # scenario data
+
+        # Deterministic model: one scenario only
+        # TODO 6: we take scenario 0. Try another one, or the mean over scenarios. Does the
+        #   contract change? Which choice would you defend, and why?
+        s = 0
+        # TODO 7 (optional, stochastic model): use all the scenarios instead of one. Before
+        #   coding, go through every parameter, variable and constraint and decide which ones
+        #   now depend on the scenario and which ones do not. What is the utility of each side
+        #   when there are many scenarios? self.data.sc.probabilities is there for you.
+
+        self.T = self.data.n_timesteps
+        self.dt = self.data.dt  # hours per time step, MW * dt = MWh
+        self.spot = sc.spot_prices[:, s]  # EUR/MWh
+
+        # --- Generator ---
+        # Solar only. The series is the total for all of Denmark: clip the negative measurements
+        # to zero, scale to a 0..1 profile and multiply by the installed capacity of the plant.
+        solar = sc.solar[:, s].clip(min=0)
+        self.P_G = self.data.solar_mw * solar / solar.max()  # MW
+        # Disagreement point: revenue from selling all production at spot, without the contract
+        self.d_G = float(self.dt * (self.spot * self.P_G).sum())  # EUR
+
+        # --- Buyer ---
+        # The series is the whole DK1 business consumption: keep its shape and scale it so
+        # that the buyer's average load is the one in the config.
+        consumption = sc.consumption[:, s]
+        self.P_L = self.data.load_mw * consumption / consumption.mean()  # MW
+        # Disagreement point: cost of buying all the load at spot, without the contract.
+        # A cost, so the utility is negative.
+        self.d_L = -float(self.dt * (self.spot * self.P_L).sum())  # EUR
 
         logger.info("End adding parameters")
 
     def add_variables(self):
         logger.info("Start adding variables")
-        # self.u_G = self.m.addMVar(shape=(self.data.scenarios))
-        # self.u_L = self.m.addMVar(shape=(self.data.scenarios))
-        # self.w_L = self.m.addMVar(shape=(self.data.scenarios))
-        # self.w_G = self.m.addMVar(shape=(self.data.scenarios))
-        # self.S = self.m.addVar(name="S")
-        self.M = self.m.addVar(name="M")
+        self.v = SimpleNamespace()  # Namespace for all Gurobi decision variables
+
+        # --- Contract ---
+        # The solver needs finite bounds for the bilinear term S * M
+        self.v.S = self.m.addVar(lb=self.data.strike_lower, ub=self.data.strike_upper, name="S")  # strike price, EUR/MWh
+        self.v.M = self.m.addVar(lb=self.data.M_lower, ub=self.data.M_upper, name="M")  # baseload volume, MW
+
+        # --- Generator ---
+        self.v.u_G = self.m.addVar(lb=-GRB.INFINITY, name="u_G")  # utility with the contract, EUR
+        # Small positive lower bound: the log of the gain is undefined at 0
+        self.v.w_G = self.m.addVar(lb=1e-3, name="w_G")  # gain over no contract, EUR
+
+        # --- Buyer ---
+        # TODO 1: add u_L and w_L, same as the generator. Think about the lower bounds: what
+        #   sign does the buyer's utility have? Check what addVar uses if you give no lb.
+
+        # --- Nash bargaining ---
+        self.v.log_w_G = self.m.addVar(lb=-GRB.INFINITY, name="log_w_G")  # log of the generator's gain
+        # TODO 3: add log_w_L.
+
         logger.info("End adding variables")
 
     def add_constraints(self):
         logger.info("Start adding contraints")
+        v = self.v
+
+        # --- Generator ---
+        # Every time step the generator is paid S for the baseload volume M and settles the
+        # difference between its production and M at the spot price:
+        #   u_G = sum_t dt * (S * M + spot_t * (P_G_t - M))
+        # written with the sums over t already taken, since S and M do not depend on t.
+        self.m.addConstr(
+            v.u_G == self.dt * (self.T * v.S * v.M + (self.spot * self.P_G).sum() - self.spot.sum() * v.M),
+            name="utility_G",
+        )
+        self.m.addConstr(v.w_G == v.u_G - self.d_G, name="gain_G")
+
+        # --- Buyer ---
+        # TODO 2: define u_L and w_L. Write the buyer's cash flows on paper first: what does
+        #   it pay for the baseload volume, and what for the rest of its load? Mind the sign
+        #   and the units (dt). d_L is already in add_parameters.
+        #   Check: fix S and M by hand and compare u_L with your own calculation.
+
+        # --- Nash bargaining ---
+        self.m.addGenConstrLog(v.w_G, v.log_w_G, name="log_gain_G")  # log_w_G = log(w_G)
+        # TODO 3: link log_w_L to w_L.
 
         logger.info("End adding contraints")
 
     def add_objective(self):
         logger.info("Start adding objective")
-
+        # Nash bargaining: each side's log gain, weighted by its bargaining power
+        # bargaining power of the generator, buyer has 1 - tau
+        self.obj_expression = self.data.tau * self.v.log_w_G
+        # TODO 4: add the buyer's term, weighted with its bargaining power. Right now the
+        #   solver only cares about the generator: look at the S and M it picks.
+        # TODO 5: run it. Is the model feasible? Before debugging the code, compute w_G + w_L
+        #   on paper. What do you get, and what does it mean for the two logs? Come to me
+        #   with your answer and a proposal for what the model should optimise instead.
+        self.m.setObjective(self.obj_expression, GRB.MAXIMIZE)
         logger.info("End adding objective")
 
     def solve(self):
-        self.model.optimize()
+        self.m.optimize()
+        # TODO 5: log the solver status (self.m.Status) and the objective value. The status is
+        #   a number: look up in the Gurobi docs what each one means.
+        #   If the model is infeasible, self.m.computeIIS() tells you which constraints clash.

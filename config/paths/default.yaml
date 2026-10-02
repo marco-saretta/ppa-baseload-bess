@@ -6,5 +6,5 @@ log:  "${paths.root}/logs"
 # Input data - Downloaded and preprocessed by DataPreprocessor
 data: "${paths.root}/data"
 
-# Subdirectory per scenario: {processed}/{label}/
-processed: "${paths.root}/simulations"
+# Model results - Written by DataExporter, one subdirectory per simulation: {results}/{label}/
+results: "${paths.root}/results"

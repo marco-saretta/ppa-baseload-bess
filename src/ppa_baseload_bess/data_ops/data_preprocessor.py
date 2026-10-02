@@ -31,10 +31,20 @@ class DataPreprocessor:
         self.scenario_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self) -> None:
-        self.prepare_spot_prices()
-        self.prepare_power_system()
-        self.prepare_consumption()
+        if self.is_preprocessed():
+            log.info(f"Preprocessed data already in {self.preprocessed_dir}, skipping download and preprocessing")
+        else:
+            self.prepare_spot_prices()
+            self.prepare_power_system()
+            self.prepare_consumption()
+        # Always rebuilt: cheap, and they depend on the simulation config (seed, horizon, ...)
         self.prepare_scenarios()
+
+    def is_preprocessed(self) -> bool:
+        """True if every preprocessed file exists (delete data/preprocessed/ to redo it,
+        e.g. after changing timestep, start or end)."""
+        names = ["spot_prices", "power_system", "solar_data", "onshore_wind_data", "offshore_wind_data", "consumption"]
+        return all((self.preprocessed_dir / f"{name}.csv").exists() for name in names)
 
     # Wrapper methods --> download + preprocess one dataset, then build scenarios from all of them
 
