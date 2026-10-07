@@ -32,7 +32,7 @@ class DataPreprocessor:
 
     def run(self) -> None:
         if self.is_preprocessed():
-            log.info(f"Preprocessed data already in {self.preprocessed_dir}, skipping download and preprocessing")
+            log.info(f"Vasiliki, preprocessed data already in {self.preprocessed_dir}, skipping download and preprocessing")
         else:
             self.prepare_spot_prices()
             self.prepare_power_system()

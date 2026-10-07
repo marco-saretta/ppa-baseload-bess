@@ -100,9 +100,13 @@ class Model:
         # --- Buyer ---
         # TODO 1: add u_L and w_L, same as the generator. Think about the lower bounds: what
         #   sign does the buyer's utility have? Check what addVar uses if you give no lb.
+        self.v.u_L = self.m.addVar(lb=-GRB.INFINITY, name='u_L')
+        self.v.w_L = self.m.addVar(lb=1e-3, name='w_L')
+        #By default, lb=0 in Gurobi. The buyer's utility is mainly negative.  
 
         # --- Nash bargaining ---
         self.v.log_w_G = self.m.addVar(lb=-GRB.INFINITY, name="log_w_G")  # log of the generator's gain
+        self.v.log_w_L = self.m.addVar(lb=-GRB.INFINITY, name="log_w_L")
         # TODO 3: add log_w_L.
 
         logger.info("End adding variables")
@@ -127,10 +131,17 @@ class Model:
         #   it pay for the baseload volume, and what for the rest of its load? Mind the sign
         #   and the units (dt). d_L is already in add_parameters.
         #   Check: fix S and M by hand and compare u_L with your own calculation.
+        self.m.addConstr(
+            v.u_L == self.dt * (-self.T * v.S * v.M + self.spot.sum() * v.M - (self.spot * self.P_L).sum()),
+            name="utility_L"
+        )
+        #self.m.addConstr(v.w_L == v.u_L - self.d_L, name="gain_L")
+        self.m.addConstr(v.w_L == - v.w_L, name="gain_L")
 
         # --- Nash bargaining ---
         self.m.addGenConstrLog(v.w_G, v.log_w_G, name="log_gain_G")  # log_w_G = log(w_G)
         # TODO 3: link log_w_L to w_L.
+        self.m.addGenConstrLog(v.w_L, v.log_w_L, name="log_gain_L")
 
         logger.info("End adding contraints")
 
@@ -138,17 +149,21 @@ class Model:
         logger.info("Start adding objective")
         # Nash bargaining: each side's log gain, weighted by its bargaining power
         # bargaining power of the generator, buyer has 1 - tau
-        self.obj_expression = self.data.tau * self.v.log_w_G
+        self.obj_expression = self.data.tau * self.v.log_w_G  + (1-self.data.tau) * self.v.log_w_L
         # TODO 4: add the buyer's term, weighted with its bargaining power. Right now the
         #   solver only cares about the generator: look at the S and M it picks.
         # TODO 5: run it. Is the model feasible? Before debugging the code, compute w_G + w_L
         #   on paper. What do you get, and what does it mean for the two logs? Come to me
         #   with your answer and a proposal for what the model should optimise instead.
+       
         self.m.setObjective(self.obj_expression, GRB.MAXIMIZE)
         logger.info("End adding objective")
 
     def solve(self):
         self.m.optimize()
+
+        logger.info(f"The solver status is {self.m.Status}")
+        #logger.info(f"The constraints that clash are {self.m.computeIIS()}")
         # TODO 5: log the solver status (self.m.Status) and the objective value. The status is
         #   a number: look up in the Gurobi docs what each one means.
         #   If the model is infeasible, self.m.computeIIS() tells you which constraints clash.
