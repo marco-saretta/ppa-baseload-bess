@@ -54,7 +54,7 @@ class Model:
         # Deterministic model: one scenario only
         # TODO 6: we take scenario 0. Try another one, or the mean over scenarios. Does the
         #   contract change? Which choice would you defend, and why?
-        s = 0
+        s = self.data.n_scenarios
         # TODO 7 (optional, stochastic model): use all the scenarios instead of one. Before
         #   coding, go through every parameter, variable and constraint and decide which ones
         #   now depend on the scenario and which ones do not. What is the utility of each side
@@ -62,12 +62,13 @@ class Model:
 
         self.T = self.data.n_timesteps
         self.dt = self.data.dt  # hours per time step, MW * dt = MWh
-        self.spot = sc.spot_prices[:, s]  # EUR/MWh
+        #self.spot = sc.spot_prices[:, s] and  self.spot = sc.spot_prices.mean(axis=1) have the same shape (672,)
+        self.spot = sc.spot_prices.mean(axis=1) # EUR/MWh
 
         # --- Generator ---
         # Solar only. The series is the total for all of Denmark: clip the negative measurements
         # to zero, scale to a 0..1 profile and multiply by the installed capacity of the plant.
-        solar = sc.solar[:, s].clip(min=0)
+        solar = sc.solar.mean(axis=1).clip(min=0)
         self.P_G = self.data.solar_mw * solar / solar.max()  # MW
         # Disagreement point: revenue from selling all production at spot, without the contract
         self.d_G = float(self.dt * (self.spot * self.P_G).sum())  # EUR
@@ -75,7 +76,7 @@ class Model:
         # --- Buyer ---
         # The series is the whole DK1 business consumption: keep its shape and scale it so
         # that the buyer's average load is the one in the config.
-        consumption = sc.consumption[:, s]
+        consumption = sc.consumption.mean(axis=1)
         self.P_L = self.data.load_mw * consumption / consumption.mean()  # MW
         # Disagreement point: cost of buying all the load at spot, without the contract.
         # A cost, so the utility is negative.
