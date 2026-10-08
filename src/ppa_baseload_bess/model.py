@@ -51,6 +51,7 @@ class Model:
         logger.info("Start adding parameters")
         sc = self.data.sc  # scenario data
         self.p  = self.data.sc.probabilities
+<<<<<<< Updated upstream
 
         # Deterministic model: one scenario only
         # TODO 6: we take scenario 0. Try another one, or the mean over scenarios. Does the
@@ -61,6 +62,8 @@ class Model:
         #   now depend on the scenario and which ones do not. What is the utility of each side
         #   when there are many scenarios? self.data.sc.probabilities is there for you.
 
+=======
+>>>>>>> Stashed changes
         self.T = self.data.n_timesteps
         self.dt = self.data.dt  # hours per time step, MW * dt = MWh
         self.spot = sc.spot_prices  # EUR/MWh
