@@ -50,11 +50,12 @@ class Model:
     def add_parameters(self):
         logger.info("Start adding parameters")
         sc = self.data.sc  # scenario data
+        self.p  = self.data.sc.probabilities
 
         # Deterministic model: one scenario only
         # TODO 6: we take scenario 0. Try another one, or the mean over scenarios. Does the
         #   contract change? Which choice would you defend, and why?
-        s = self.data.n_scenarios
+        
         # TODO 7 (optional, stochastic model): use all the scenarios instead of one. Before
         #   coding, go through every parameter, variable and constraint and decide which ones
         #   now depend on the scenario and which ones do not. What is the utility of each side
@@ -62,13 +63,12 @@ class Model:
 
         self.T = self.data.n_timesteps
         self.dt = self.data.dt  # hours per time step, MW * dt = MWh
-        #self.spot = sc.spot_prices[:, s] and  self.spot = sc.spot_prices.mean(axis=1) have the same shape (672,)
-        self.spot = sc.spot_prices.mean(axis=1) # EUR/MWh
-
+        self.spot = sc.spot_prices  # EUR/MWh
+        
         # --- Generator ---
         # Solar only. The series is the total for all of Denmark: clip the negative measurements
         # to zero, scale to a 0..1 profile and multiply by the installed capacity of the plant.
-        solar = sc.solar.mean(axis=1).clip(min=0)
+        solar = sc.solar.clip(min=0)
         self.P_G = self.data.solar_mw * solar / solar.max()  # MW
         # Disagreement point: revenue from selling all production at spot, without the contract
         self.d_G = float(self.dt * (self.spot * self.P_G).sum())  # EUR
@@ -76,7 +76,7 @@ class Model:
         # --- Buyer ---
         # The series is the whole DK1 business consumption: keep its shape and scale it so
         # that the buyer's average load is the one in the config.
-        consumption = sc.consumption.mean(axis=1)
+        consumption = sc.consumption
         self.P_L = self.data.load_mw * consumption / consumption.mean()  # MW
         # Disagreement point: cost of buying all the load at spot, without the contract.
         # A cost, so the utility is negative.
@@ -115,15 +115,11 @@ class Model:
     def add_constraints(self):
         logger.info("Start adding contraints")
         v = self.v
-
-        # --- Generator ---
-        # Every time step the generator is paid S for the baseload volume M and settles the
-        # difference between its production and M at the spot price:
-        #   u_G = sum_t dt * (S * M + spot_t * (P_G_t - M))
-        # written with the sums over t already taken, since S and M do not depend on t.
+        p = self.p
+    
         self.m.addConstr(
-            v.u_G == self.dt * (self.T * v.S * v.M + (self.spot * self.P_G).sum() - self.spot.sum() * v.M),
-            name="utility_G",
+            v.u_G == gp.quicksum(p * (self.dt * (self.T * v.S * v.M + (self.spot * self.P_G).sum(axis=0) - self.spot.sum(axis=0) * v.M))),
+            name="utility_G"
         )
         self.m.addConstr(v.w_G == v.u_G - self.d_G, name="gain_G")
 
@@ -136,8 +132,8 @@ class Model:
             v.u_L == self.dt * (-self.T * v.S * v.M + self.spot.sum() * v.M - (self.spot * self.P_L).sum()),
             name="utility_L"
         )
-        #self.m.addConstr(v.w_L == v.u_L - self.d_L, name="gain_L")
-        self.m.addConstr(v.w_L == - v.w_L, name="gain_L")
+        self.m.addConstr(v.w_L == v.u_L - self.d_L, name="gain_L")
+        #self.m.addConstr(v.w_L == - v.w_L, name="gain_L")
 
         # --- Nash bargaining ---
         self.m.addGenConstrLog(v.w_G, v.log_w_G, name="log_gain_G")  # log_w_G = log(w_G)
