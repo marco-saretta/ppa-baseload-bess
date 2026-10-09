@@ -51,19 +51,6 @@ class Model:
         logger.info("Start adding parameters")
         sc = self.data.sc  # scenario data
         self.p  = self.data.sc.probabilities
-<<<<<<< Updated upstream
-
-        # Deterministic model: one scenario only
-        # TODO 6: we take scenario 0. Try another one, or the mean over scenarios. Does the
-        #   contract change? Which choice would you defend, and why?
-        
-        # TODO 7 (optional, stochastic model): use all the scenarios instead of one. Before
-        #   coding, go through every parameter, variable and constraint and decide which ones
-        #   now depend on the scenario and which ones do not. What is the utility of each side
-        #   when there are many scenarios? self.data.sc.probabilities is there for you.
-
-=======
->>>>>>> Stashed changes
         self.T = self.data.n_timesteps
         self.dt = self.data.dt  # hours per time step, MW * dt = MWh
         self.spot = sc.spot_prices  # EUR/MWh
@@ -74,7 +61,8 @@ class Model:
         solar = sc.solar.clip(min=0)
         self.P_G = self.data.solar_mw * solar / solar.max()  # MW
         # Disagreement point: revenue from selling all production at spot, without the contract
-        self.d_G = float(self.dt * (self.spot * self.P_G).sum())  # EUR
+        self.rev_G = (self.spot * self.P_G).sum(axis=0) 
+        self.d_G = float(self.dt * (self.p * self.rev_G).sum())  # EUR
 
         # --- Buyer ---
         # The series is the whole DK1 business consumption: keep its shape and scale it so
@@ -83,8 +71,9 @@ class Model:
         self.P_L = self.data.load_mw * consumption / consumption.mean()  # MW
         # Disagreement point: cost of buying all the load at spot, without the contract.
         # A cost, so the utility is negative.
-        self.d_L = -float(self.dt * (self.spot * self.P_L).sum())  # EUR
-
+        self.cost_L = - (self.spot * self.P_L).sum(axis=0)
+        self.d_L = float(self.dt * (self.p * self.cost_L).sum())  # EUR
+        
         logger.info("End adding parameters")
 
     def add_variables(self):
@@ -100,18 +89,17 @@ class Model:
         self.v.u_G = self.m.addVar(lb=-GRB.INFINITY, name="u_G")  # utility with the contract, EUR
         # Small positive lower bound: the log of the gain is undefined at 0
         self.v.w_G = self.m.addVar(lb=1e-3, name="w_G")  # gain over no contract, EUR
+        self.cost_G = - self.spot.sum(axis=0) * self.v.M
 
         # --- Buyer ---
-        # TODO 1: add u_L and w_L, same as the generator. Think about the lower bounds: what
-        #   sign does the buyer's utility have? Check what addVar uses if you give no lb.
         self.v.u_L = self.m.addVar(lb=-GRB.INFINITY, name='u_L')
         self.v.w_L = self.m.addVar(lb=1e-3, name='w_L')
         #By default, lb=0 in Gurobi. The buyer's utility is mainly negative.  
+        self.rev_L = self.spot.sum(axis=0) * self.v.M 
 
         # --- Nash bargaining ---
         self.v.log_w_G = self.m.addVar(lb=-GRB.INFINITY, name="log_w_G")  # log of the generator's gain
         self.v.log_w_L = self.m.addVar(lb=-GRB.INFINITY, name="log_w_L")
-        # TODO 3: add log_w_L.
 
         logger.info("End adding variables")
 
@@ -119,9 +107,13 @@ class Model:
         logger.info("Start adding contraints")
         v = self.v
         p = self.p
+        rev_G = self.rev_G
+        cost_G = self.cost_G
+        rev_L = self.rev_L
+        cost_L = self.cost_L
     
         self.m.addConstr(
-            v.u_G == gp.quicksum(p * (self.dt * (self.T * v.S * v.M + (self.spot * self.P_G).sum(axis=0) - self.spot.sum(axis=0) * v.M))),
+            v.u_G == gp.quicksum(p * (self.dt * (self.T * v.S * v.M + rev_G + cost_G))),
             name="utility_G"
         )
         self.m.addConstr(v.w_G == v.u_G - self.d_G, name="gain_G")
@@ -132,15 +124,13 @@ class Model:
         #   and the units (dt). d_L is already in add_parameters.
         #   Check: fix S and M by hand and compare u_L with your own calculation.
         self.m.addConstr(
-            v.u_L == self.dt * (-self.T * v.S * v.M + self.spot.sum() * v.M - (self.spot * self.P_L).sum()),
+            v.u_L == gp.quicksum(p * (self.dt * (-self.T * v.S * v.M + rev_L + cost_L))),
             name="utility_L"
         )
         self.m.addConstr(v.w_L == v.u_L - self.d_L, name="gain_L")
-        #self.m.addConstr(v.w_L == - v.w_L, name="gain_L")
 
         # --- Nash bargaining ---
         self.m.addGenConstrLog(v.w_G, v.log_w_G, name="log_gain_G")  # log_w_G = log(w_G)
-        # TODO 3: link log_w_L to w_L.
         self.m.addGenConstrLog(v.w_L, v.log_w_L, name="log_gain_L")
 
         logger.info("End adding contraints")
@@ -150,11 +140,6 @@ class Model:
         # Nash bargaining: each side's log gain, weighted by its bargaining power
         # bargaining power of the generator, buyer has 1 - tau
         self.obj_expression = self.data.tau * self.v.log_w_G  + (1-self.data.tau) * self.v.log_w_L
-        # TODO 4: add the buyer's term, weighted with its bargaining power. Right now the
-        #   solver only cares about the generator: look at the S and M it picks.
-        # TODO 5: run it. Is the model feasible? Before debugging the code, compute w_G + w_L
-        #   on paper. What do you get, and what does it mean for the two logs? Come to me
-        #   with your answer and a proposal for what the model should optimise instead.
        
         self.m.setObjective(self.obj_expression, GRB.MAXIMIZE)
         logger.info("End adding objective")
@@ -164,6 +149,4 @@ class Model:
 
         logger.info(f"The solver status is {self.m.Status}")
         #logger.info(f"The constraints that clash are {self.m.computeIIS()}")
-        # TODO 5: log the solver status (self.m.Status) and the objective value. The status is
-        #   a number: look up in the Gurobi docs what each one means.
-        #   If the model is infeasible, self.m.computeIIS() tells you which constraints clash.
+        
