@@ -6,7 +6,7 @@ import pandas as pd
 from gurobipy import GRB
 from omegaconf import OmegaConf
 
-from ..utils import get_logger
+from ..utils.logger import get_logger
 
 log = get_logger(__name__)
 

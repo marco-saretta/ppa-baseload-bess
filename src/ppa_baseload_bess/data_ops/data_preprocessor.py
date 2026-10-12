@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from ..utils import get_logger
+from ..utils.logger import get_logger
 
 
 log = get_logger(__name__)
@@ -32,7 +32,9 @@ class DataPreprocessor:
 
     def run(self) -> None:
         if self.is_preprocessed():
-            log.info(f"Vasiliki, preprocessed data already in {self.preprocessed_dir}, skipping download and preprocessing")
+            log.info(
+                f"Vasiliki, preprocessed data already in {self.preprocessed_dir}, skipping download and preprocessing"
+            )
         else:
             self.prepare_spot_prices()
             self.prepare_power_system()

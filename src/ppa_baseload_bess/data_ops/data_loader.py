@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from ..utils import get_logger
+from ..utils.logger import get_logger
 
 log = get_logger(__name__)
 
@@ -45,6 +45,8 @@ class DataLoader:
         M_lower         bounds of the baseload volume M, MW
         M_upper
         tau             bargaining power of the generator, 0..1
+        alpha_G, beta_G CVaR confidence level and risk aversion of the generator, 0..1
+        alpha_L, beta_L CVaR confidence level and risk aversion of the buyer, 0..1
     """
 
     def __init__(self, cfg) -> None:
@@ -145,3 +147,7 @@ class DataLoader:
         self.M_lower = sim_cfg.contract.M_lower
         self.M_upper = sim_cfg.contract.M_upper
         self.tau = sim_cfg.contract.tau
+        self.alpha_G = sim_cfg.cvar.generator.alpha
+        self.beta_G = sim_cfg.cvar.generator.beta
+        self.alpha_L = sim_cfg.cvar.buyer.alpha
+        self.beta_L = sim_cfg.cvar.buyer.beta

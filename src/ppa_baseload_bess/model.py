@@ -6,15 +6,32 @@ import numpy as np
 from gurobipy import GRB
 from omegaconf import DictConfig
 
+from .utils.risk import risk_adjusted  # noqa: F401, used in TODO 5
+
 logger = logging.getLogger(__name__)
 
-# Stochastic model, risk neutral: every time series is an array of shape (T, S), one column per
-# scenario, and each side's utility is its expected profit over the scenarios.
+# Stochastic model with CVaR: each side's utility is a mix of its expected profit and the
+# expected profit in its worst scenarios (CVaR):
+#   u = (1 - beta) * E[profit] + beta * CVaR_alpha[profit]
+# alpha and beta come from config/simulations/<label>.yaml, block `cvar`, one pair per side.
 #
-# Expected outcome: INFEASIBLE, as in the deterministic model. The utilities are linear in the
-# spot price, so the expectation gives the same contract as the mean scenario, and the
-# contract is still zero sum: w_G + w_L = 0 for every S and M. The solver reports the
-# conflicting constraints (IIS) in the log and in results/<label>/model.ilp.
+# The task: add the CVaR. Follow the TODOs in order (1 to 6):
+#   TODO 1-2  buyer: utility with CVaR and the constraint that defines VaR_aux_L
+#   TODO 3-4  generator: the same
+#   TODO 5    disagreement points measured with the same utility
+#   TODO 6    check the result
+# No for loops: use the MVars, @ and numpy operations, as in the profit constraints.
+# Run `uv run python main.py` after every TODO and look at the status in the log and at
+# results/<label>/scenarios.csv. Until TODO 1 and 3 are done u_L and u_G have no constraint,
+# so the objective can grow without limit and Gurobi stops without an optimum (status 13).
+#
+# TODO 6 - Check the result, with the default config the model is now OPTIMAL:
+#   - Set beta = 0 for both sides: you are back to the stochastic model. Which status, and why?
+#   - With beta > 0, compute w_G + w_L from variables.csv. Is it still zero? Where does the
+#     gain come from? Compare scenarios.csv with and without the contract.
+#   - Change tau. How do w_G and w_L split? Does S or M change, and why that one?
+#   - Is M unique? Fix M to a few values around the optimum (M_lower = M_upper in the
+#     config) and compare w_G + w_L.
 
 
 class Model:
@@ -77,43 +94,62 @@ class Model:
         self.cost_L = -self.dt * (self.spot * self.P_L).sum(axis=0)  # EUR per scenario, shape (S,)
         self.d_L = float(self.p @ self.cost_L)  # expected, EUR
 
+        # --- Risk aversion ---
+        self.alpha_G, self.beta_G = self.data.alpha_G, self.data.beta_G  # generator
+        self.alpha_L, self.beta_L = self.data.alpha_L, self.data.beta_L  # buyer
+
+        # TODO 5 - Disagreement points with CVaR. Do it after TODO 1-4, and run the model before:
+        #   which status do you get, and why?
+        #   d_G is the utility without the contract, so it must be measured like u_G:
+        #     d_G = (1 - beta_G) * E[rev_G] + beta_G * CVaR_alpha_G[rev_G]
+        #   rev_G is data, not a variable, so this is a numpy computation. Write it in
+        #   utils/risk.py (TODO 5a and 5b), test it on the small example there, then use it
+        #   here for both sides, replacing the expected values above:
+        # self.d_G = risk_adjusted(self.rev_G, self.p, self.alpha_G, self.beta_G)
+        # self.d_L = ...
+
         logger.info("End adding parameters")
 
     def add_variables(self):
         logger.info("Start adding variables")
         self.v = SimpleNamespace()  # Namespace for all Gurobi decision variables
 
-        # --- Contract ---
-        # 0-d MVars (shape ()), so that they combine with the (S,) arrays as matrix expressions:
-        # spot_sum * M is an MLinExpr of shape (S,). The solver needs finite bounds for the
-        # bilinear term S * M.
+        # Contract
         self.v.S = self.m.addMVar(
-            (), lb=self.data.strike_lower, ub=self.data.strike_upper, name="S"
+            shape=(), lb=self.data.strike_lower, ub=self.data.strike_upper, name="S"
         )  # strike price, EUR/MWh
-        self.v.M = self.m.addMVar((), lb=self.data.M_lower, ub=self.data.M_upper, name="M")  # baseload volume, MW
+        self.v.M = self.m.addMVar(shape=(), lb=self.data.M_lower, ub=self.data.M_upper, name="M")  # baseload volume, MW
 
-        # --- Generator ---
+        # Generator
         self.v.profit_G = self.m.addMVar(self.S, lb=-GRB.INFINITY, name="profit_G")  # per scenario, EUR
         self.v.u_G = self.m.addVar(lb=-GRB.INFINITY, name="u_G")  # utility with the contract, EUR
-        # Small positive lower bound: the log of the gain is undefined at 0
-        self.v.w_G = self.m.addVar(lb=1e-3, name="w_G")  # gain over no contract, EUR
 
-        # --- Buyer ---
-        # By default, lb=0 in Gurobi. The buyer's profit and utility are mainly negative.
+        # Buyer
         self.v.profit_L = self.m.addMVar(self.S, lb=-GRB.INFINITY, name="profit_L")
         self.v.u_L = self.m.addVar(lb=-GRB.INFINITY, name="u_L")
-        self.v.w_L = self.m.addVar(lb=1e-3, name="w_L")
 
-        # --- Nash bargaining ---
+        # Nash bargaining
+        self.v.w_L = self.m.addVar(lb=1e-3, name="w_L")
+        self.v.w_G = self.m.addVar(lb=1e-3, name="w_G")  # gain over no contract, EUR
         self.v.log_w_G = self.m.addVar(lb=-GRB.INFINITY, name="log_w_G")  # log of the generator's gain
         self.v.log_w_L = self.m.addVar(lb=-GRB.INFINITY, name="log_w_L")
 
+        # CVaR terms
+        # VaR: the profit threshold of the worst (1 - alpha) share of scenarios. Free: the buyer's
+        # profits are all negative, so its VaR is too.
+        # VaR_aux: per scenario, how far the profit falls below VaR (0 if above), EUR.
+        self.v.VaR_G = self.m.addVar(lb=-GRB.INFINITY, name="VaR_G")  # EUR
+        self.v.VaR_aux_G = self.m.addMVar(self.S, lb=0, name="VaR_aux_G")  # EUR, shape (S,)
+        self.v.VaR_L = self.m.addVar(lb=-GRB.INFINITY, name="VaR_L")
+        self.v.VaR_aux_L = self.m.addMVar(self.S, lb=0, name="VaR_aux_L")
         logger.info("End adding variables")
 
     def add_constraints(self):
         logger.info("Start adding contraints")
         v = self.v
-        p, dt, T = self.p, self.dt, self.T
+        p = self.p
+        dt = self.dt
+        T = self.T
 
         # --- Generator ---
         # In scenario s the generator is paid S for the baseload volume M, sells its production
@@ -122,8 +158,10 @@ class Model:
         # The sums over t are already taken (rev_G, spot_sum), so this is one matrix
         # constraint of shape (S,): one row per scenario.
         self.m.addConstr(v.profit_G == dt * (T * v.S * v.M - self.spot_sum * v.M) + self.rev_G, name="profit_G")
-        # Utility: the expected profit
-        self.m.addConstr(v.u_G == p @ v.profit_G, name="utility_G")
+        # TODO 3 - Utility of the generator with CVaR, the mirror of TODO 1
+        # self.m.addConstr(v.u_G == ..., name="utility_G")
+        # TODO 4 - Shortfall of the generator below VaR_G, the mirror of TODO 2
+        # self.m.addConstr(v.VaR_aux_G >= ..., name="cvar_aux_G")
         self.m.addConstr(v.w_G == v.u_G - self.d_G, name="gain_G")
 
         # --- Buyer ---
@@ -131,7 +169,16 @@ class Model:
         # whole load at spot:
         #   profit_L[s] = sum_t dt * (-S * M + spot[t, s] * (M - P_L[t, s]))
         self.m.addConstr(v.profit_L == dt * (-T * v.S * v.M + self.spot_sum * v.M) + self.cost_L, name="profit_L")
-        self.m.addConstr(v.u_L == p @ v.profit_L, name="utility_L")
+        # TODO 1 - Complete the utility constraint with CVaR:
+        #   u_L = (1 - beta_L) * E[profit_L] + beta_L * CVaR_L
+        #   CVaR_L = VaR_L - 1 / (1 - alpha_L) * sum_s p[s] * VaR_aux_L[s]
+        #   Mind the brackets: in Python 1/1-alpha is 1 - alpha.
+        # self.m.addConstr(v.u_L == (1 - self.beta_L) * p @ v.profit_L + self.beta_L * (...), name="utility_L")
+        # TODO 2 - Add the aux CVaR constraint. VaR_aux_L[s] is how far profit_L[s] falls below VaR_L:
+        #   VaR_aux_L[s] >= VaR_L - profit_L[s]   and   VaR_aux_L[s] >= 0 (already its lower bound)
+        #   One matrix constraint of shape (S,), no for loop.
+        #   Question: the definition is max(VaR_L - profit_L[s], 0), so why is ">=" enough?
+        # self.m.addConstr(v.VaR_aux_L >= v.VaR_L - ..., name="cvar_aux_L")
         self.m.addConstr(v.w_L == v.u_L - self.d_L, name="gain_L")
 
         # --- Nash bargaining ---

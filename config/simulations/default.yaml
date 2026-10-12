@@ -38,3 +38,16 @@ contract:
 
   # Bargaining power tau of the generator in the Nash objective, 0..1. The buyer has 1 - tau.
   tau: 0.5
+
+# --- CVaR ---------------------------------------------------------------------
+
+# Risk aversion of each side. Utility = (1 - beta) * E[profit] + beta * CVaR_alpha[profit]:
+#   alpha: confidence level, CVaR is the expected profit in the worst (1 - alpha) share of scenarios
+#   beta:  weight of the CVaR, 0 = risk neutral, 1 = only the tail counts
+cvar:
+  generator:
+    alpha: 0.95
+    beta: 0.5
+  buyer:
+    alpha: 0.95
+    beta: 0.5
