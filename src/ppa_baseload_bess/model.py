@@ -6,7 +6,7 @@ import numpy as np
 from gurobipy import GRB
 from omegaconf import DictConfig
 
-from .utils.risk import risk_adjusted  # noqa: F401, used in TODO 5
+from .utils.risk import risk_adjusted
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +14,6 @@ logger = logging.getLogger(__name__)
 # expected profit in its worst scenarios (CVaR):
 #   u = (1 - beta) * E[profit] + beta * CVaR_alpha[profit]
 # alpha and beta come from config/simulations/<label>.yaml, block `cvar`, one pair per side.
-#
-# The task: add the CVaR. Follow the TODOs in order (1 to 6):
-#   TODO 1-2  buyer: utility with CVaR and the constraint that defines VaR_aux_L
-#   TODO 3-4  generator: the same
-#   TODO 5    disagreement points measured with the same utility
-#   TODO 6    check the result
-# No for loops: use the MVars, @ and numpy operations, as in the profit constraints.
-# Run `uv run python main.py` after every TODO and look at the status in the log and at
-# results/<label>/scenarios.csv. Until TODO 1 and 3 are done u_L and u_G have no constraint,
-# so the objective can grow without limit and Gurobi stops without an optimum (status 13).
 #
 # TODO 6 - Check the result, with the default config the model is now OPTIMAL:
 #   - Set beta = 0 for both sides: you are back to the stochastic model. Which status, and why?
@@ -75,38 +65,32 @@ class Model:
         # 1 MW of baseload is dt * spot_sum[s]
         self.spot_sum = self.spot.sum(axis=0)
 
+        # --- Risk aversion ---
+        self.alpha_G, self.beta_G = self.data.alpha_G, self.data.beta_G  # generator
+        self.alpha_L, self.beta_L = self.data.alpha_L, self.data.beta_L  # buyer
+
         # --- Generator ---
         # Solar only. The series is the total for all of Denmark: clip the negative measurements
         # to zero, scale to a 0..1 profile and multiply by the installed capacity of the plant.
         solar = sc.solar.clip(min=0)
         self.P_G = self.data.solar_mw * solar / solar.max()  # MW
-        # Disagreement point: revenue from selling all production at spot, without the contract
+        # Revenue from selling all production at spot, without the contract
         self.rev_G = self.dt * (self.spot * self.P_G).sum(axis=0)  # EUR per scenario, shape (S,)
-        self.d_G = float(self.p @ self.rev_G)  # expected, EUR
 
         # --- Buyer ---
         # The series is the whole DK1 business consumption: keep its shape and scale it so
         # that the buyer's average load is the one in the config.
         consumption = sc.consumption
         self.P_L = self.data.load_mw * consumption / consumption.mean()  # MW
-        # Disagreement point: cost of buying all the load at spot, without the contract.
-        # A cost, so the utility is negative.
+        # Cost of buying all the load at spot, without the contract. A cost, so negative.
         self.cost_L = -self.dt * (self.spot * self.P_L).sum(axis=0)  # EUR per scenario, shape (S,)
-        self.d_L = float(self.p @ self.cost_L)  # expected, EUR
 
-        # --- Risk aversion ---
-        self.alpha_G, self.beta_G = self.data.alpha_G, self.data.beta_G  # generator
-        self.alpha_L, self.beta_L = self.data.alpha_L, self.data.beta_L  # buyer
-
-        # TODO 5 - Disagreement points with CVaR. Do it after TODO 1-4, and run the model before:
-        #   which status do you get, and why?
-        #   d_G is the utility without the contract, so it must be measured like u_G:
-        #     d_G = (1 - beta_G) * E[rev_G] + beta_G * CVaR_alpha_G[rev_G]
-        #   rev_G is data, not a variable, so this is a numpy computation. Write it in
-        #   utils/risk.py (TODO 5a and 5b), test it on the small example there, then use it
-        #   here for both sides, replacing the expected values above:
-        # self.d_G = risk_adjusted(self.rev_G, self.p, self.alpha_G, self.beta_G)
-        # self.d_L = ...
+        # TODO 5 - Disagreement points: the utility without the contract, measured like u_G and u_L
+        #   d = (1 - beta) * E[profit] + beta * CVaR_alpha[profit]
+        # With the plain expected values, d would be measured differently from u: since
+        # CVaR <= E, u at M = 0 would already be below d and the model would be infeasible.
+        self.d_G = risk_adjusted(self.rev_G, self.p, self.alpha_G, self.beta_G)  # EUR
+        self.d_L = risk_adjusted(self.cost_L, self.p, self.alpha_L, self.beta_L)  # EUR
 
         logger.info("End adding parameters")
 
@@ -158,10 +142,14 @@ class Model:
         # The sums over t are already taken (rev_G, spot_sum), so this is one matrix
         # constraint of shape (S,): one row per scenario.
         self.m.addConstr(v.profit_G == dt * (T * v.S * v.M - self.spot_sum * v.M) + self.rev_G, name="profit_G")
-        # TODO 3 - Utility of the generator with CVaR, the mirror of TODO 1
-        # self.m.addConstr(v.u_G == ..., name="utility_G")
-        # TODO 4 - Shortfall of the generator below VaR_G, the mirror of TODO 2
-        # self.m.addConstr(v.VaR_aux_G >= ..., name="cvar_aux_G")
+        # TODO 3 - Utility of the generator with CVaR
+        #   CVaR_G = VaR_G - 1 / (1 - alpha_G) * sum_s p[s] * VaR_aux_G[s]
+        self.cvar_G = v.VaR_G - (1 / (1 - self.alpha_G)) * (p @ v.VaR_aux_G)
+        self.m.addConstr(
+            v.u_G == (1 - self.beta_G) * (p @ v.profit_G) + self.beta_G * self.cvar_G, name="utility_G"
+        )
+        # TODO 4 - Shortfall of the generator below VaR_G, one row per scenario
+        self.m.addConstr(v.VaR_aux_G >= v.VaR_G - v.profit_G, name="cvar_aux_G")
         self.m.addConstr(v.w_G == v.u_G - self.d_G, name="gain_G")
 
         # --- Buyer ---
@@ -169,16 +157,18 @@ class Model:
         # whole load at spot:
         #   profit_L[s] = sum_t dt * (-S * M + spot[t, s] * (M - P_L[t, s]))
         self.m.addConstr(v.profit_L == dt * (-T * v.S * v.M + self.spot_sum * v.M) + self.cost_L, name="profit_L")
-        # TODO 1 - Complete the utility constraint with CVaR:
+        # TODO 1 - Utility of the buyer with CVaR
         #   u_L = (1 - beta_L) * E[profit_L] + beta_L * CVaR_L
         #   CVaR_L = VaR_L - 1 / (1 - alpha_L) * sum_s p[s] * VaR_aux_L[s]
-        #   Mind the brackets: in Python 1/1-alpha is 1 - alpha.
-        # self.m.addConstr(v.u_L == (1 - self.beta_L) * p @ v.profit_L + self.beta_L * (...), name="utility_L")
-        # TODO 2 - Add the aux CVaR constraint. VaR_aux_L[s] is how far profit_L[s] falls below VaR_L:
-        #   VaR_aux_L[s] >= VaR_L - profit_L[s]   and   VaR_aux_L[s] >= 0 (already its lower bound)
-        #   One matrix constraint of shape (S,), no for loop.
-        #   Question: the definition is max(VaR_L - profit_L[s], 0), so why is ">=" enough?
-        # self.m.addConstr(v.VaR_aux_L >= v.VaR_L - ..., name="cvar_aux_L")
+        self.cvar_L = v.VaR_L - (1 / (1 - self.alpha_L)) * (p @ v.VaR_aux_L)
+        self.m.addConstr(
+            v.u_L == (1 - self.beta_L) * (p @ v.profit_L) + self.beta_L * self.cvar_L, name="utility_L"
+        )
+        # TODO 2 - Shortfall of the buyer below VaR_L: VaR_aux_L[s] >= VaR_L - profit_L[s], and
+        #   VaR_aux_L[s] >= 0 from its lower bound. ">=" is enough: VaR_aux_L enters the utility
+        #   with a minus sign, and the objective maximises the utility, so the solver pushes
+        #   VaR_aux_L down until one of the two bounds is tight: max(VaR_L - profit_L[s], 0).
+        self.m.addConstr(v.VaR_aux_L >= v.VaR_L - v.profit_L, name="cvar_aux_L")
         self.m.addConstr(v.w_L == v.u_L - self.d_L, name="gain_L")
 
         # --- Nash bargaining ---
@@ -210,6 +200,10 @@ class Model:
             return
 
         logger.info("Optimal, objective %.6g", self.m.ObjVal)
+        # TODO 6 - The numbers to answer the questions on the result
+        w_G, w_L = self.v.w_G.X, self.v.w_L.X
+        logger.info("Gains: w_G = %.6g, w_L = %.6g, total = %.6g EUR", w_G, w_L, w_G + w_L)
+        logger.info("Generator share of the gain = %.3f (tau = %.3f)", w_G / (w_G + w_L), self.data.tau)
 
     def _compute_iis(self):
         """Log a minimal set of constraints and bounds that cannot all hold (the IIS).

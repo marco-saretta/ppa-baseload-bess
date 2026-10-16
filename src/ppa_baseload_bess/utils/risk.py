@@ -36,7 +36,12 @@ def cvar(x: np.ndarray, p: np.ndarray, alpha: float) -> float:
         alpha = 1/3  -> -5   (mean of the worst two)
         alpha = 2/3  -> -10  (the worst one)
     """
-    raise NotImplementedError("TODO 5a in utils/risk.py")
+    # Every scenario profit is a candidate VaR: rows = candidates, columns = scenarios.
+    # VaR_aux[c, s] = max(x[c] - x[s], 0): how far scenario s falls below candidate c
+    var_aux = np.maximum(x[:, None] - x[None, :], 0)  # shape (S, S)
+    # The CVaR formula for every candidate at once, then keep the best one
+    values = x - 1 / (1 - alpha) * (var_aux @ p)  # shape (S,)
+    return float(np.max(values))
 
 
 def risk_adjusted(x: np.ndarray, p: np.ndarray, alpha: float, beta: float) -> float:
@@ -54,4 +59,4 @@ def risk_adjusted(x: np.ndarray, p: np.ndarray, alpha: float, beta: float) -> fl
 
     TODO 5b - One line with cvar() from TODO 5a. Check: beta = 0 gives the expectation p @ x.
     """
-    raise NotImplementedError("TODO 5b in utils/risk.py")
+    return (1 - beta) * float(p @ x) + beta * cvar(x, p, alpha)
