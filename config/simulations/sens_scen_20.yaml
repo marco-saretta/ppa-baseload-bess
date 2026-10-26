@@ -1,0 +1,8 @@
+# Sensitivity: 20 scenarios instead of 10, same seed
+defaults:
+  - default
+  - _self_
+
+label: sens_scen_20
+scenarios:
+  n_scenarios: 20

@@ -1,0 +1,11 @@
+# Sensitivity: CVaR over the worst 20% of scenarios (2 of 10) instead of the single worst one
+defaults:
+  - default
+  - _self_
+
+label: sens_alpha_80
+cvar:
+  generator:
+    alpha: 0.8
+  buyer:
+    alpha: 0.8

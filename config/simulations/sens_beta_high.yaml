@@ -1,0 +1,11 @@
+# Sensitivity: high risk aversion for both sides
+defaults:
+  - default
+  - _self_
+
+label: sens_beta_high
+cvar:
+  generator:
+    beta: 0.8
+  buyer:
+    beta: 0.8

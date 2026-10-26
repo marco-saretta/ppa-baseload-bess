@@ -1,0 +1,11 @@
+# Sensitivity: the buyer is more risk averse than the generator
+defaults:
+  - default
+  - _self_
+
+label: sens_buyer_averse
+cvar:
+  generator:
+    beta: 0.2
+  buyer:
+    beta: 0.8

@@ -1,0 +1,6 @@
+# Sensitivity: reference point, same as default.yaml
+defaults:
+  - default
+  - _self_
+
+label: sens_base
