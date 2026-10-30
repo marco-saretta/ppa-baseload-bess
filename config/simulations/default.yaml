@@ -46,8 +46,8 @@ contract:
 #   beta:  weight of the CVaR, 0 = risk neutral, 1 = only the tail counts
 cvar:
   generator:
-    alpha: 0.95
+    alpha: 0.90
     beta: 0.5
   buyer:
-    alpha: 0.95
+    alpha: 0.90
     beta: 0.5

@@ -1,0 +1,22 @@
+# @package _global_
+# Sweeping beta for generator and load: 11 x 11 = 121 runs.
+# Run with:  uv run main.py --multirun +sweep=beta_grid
+
+# Marks the runs as part of this sweep: the exporter adds one row per run to results/sweep_beta_grid.csv
+sweep_name: beta_grid
+
+# Each run gets its own label, built from its two betas, e.g. beta_G0.3_L0.7
+simulations:
+  label: beta_G${simulations.cvar.generator.beta}_L${simulations.cvar.buyer.beta}
+
+hydra:
+  # The combinations to run: every value of the first list with every value of the second
+  sweeper:
+    params:
+      simulations.cvar.generator.beta: 0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9
+      simulations.cvar.buyer.beta: 0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9
+  # Code that Hydra calls before the first run and after the last one
+  callbacks:
+    beta_heatmaps:
+      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepHeatmapCallback
+      sweep_name: beta_grid
