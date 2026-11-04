@@ -121,6 +121,14 @@ class DataExporter:
             df = df.join(self.per_scenario)
             df["gain_G"] = df["profit_G"] - df["profit_G_no_contract"]
             df["gain_L"] = df["profit_L"] - df["profit_L_no_contract"]
+            # [Task 2] Energy positions per scenario, MWh over the horizon
+            df["E_G_MWh"] = model.dt * model.P_G.sum(axis=0)  # generator production: sold at spot without a contract
+            df["E_L_MWh"] = model.dt * model.P_L.sum(axis=0)  # load consumption: bought at spot without a contract
+            if self.has_solution:
+                df["contract_MWh"] = model.dt * model.T * float(model.v.M.X)  # H * M*: the same in every scenario
+                df["net_G_MWh"] = df["E_G_MWh"] - df["contract_MWh"]  # < 0: the generator is short that week
+                df["net_L_MWh"] = df["E_L_MWh"] - df["contract_MWh"]  # < 0: the load has more than it needs
+            self.scen = df  # [Task 2] kept for the averages in sweep_row()
         df.index.name = "scenario"
         df.to_csv(self.out_dir / "scenarios.csv")
 
@@ -242,6 +250,31 @@ class DataExporter:
         summary.index.name = "key"
         summary.to_csv(self.out_dir / "surplus_summary.csv")
 
+    def earnings_percentiles(self) -> dict:
+        """[Risk aversion fan charts] Distribution of each side's earnings over the scenarios, MEUR.
+
+        G_p5 ... G_p95        generator earnings with the contract          (NaN without a solution)
+        G_nc_p5 ... G_nc_p95  generator earnings without the contract (spot revenue only)
+        L_...                 the same for the load (negative: its cost)
+        The scenarios are equally likely, so plain percentiles are the probability-weighted ones.
+        """
+        quantiles = [5, 25, 50, 75, 95]
+        sides = {
+            "G": (self.model.rev_G, "profit_G"),  # (no-contract profit, solved column)
+            "L": (self.model.cost_L, "profit_L"),
+        }
+        out = {}
+        for side, (no_contract, column) in sides.items():
+            without = np.percentile(no_contract, quantiles) / 1e6  # EUR -> MEUR
+            if self.has_solution:
+                with_contract = np.percentile(self.per_scenario[column].to_numpy(), quantiles) / 1e6
+            else:
+                with_contract = [np.nan] * len(quantiles)
+            for q, w, nc in zip(quantiles, with_contract, without):
+                out[f"{side}_p{q}"] = w
+                out[f"{side}_nc_p{q}"] = nc
+        return out
+
     def sweep_row(self) -> None:
         """Add this run's key results as one row to results/sweep_<name>.csv (only for sweep runs).
 
@@ -252,6 +285,7 @@ class DataExporter:
             return  # a normal run, not part of a sweep
 
         m, v, sim = self.model.m, self.model.v, self.cfg.simulations
+        p = self.model.p 
         solved = self.has_solution
         row = {
             # the settings of this run
@@ -267,7 +301,26 @@ class DataExporter:
             "w_G": v.w_G.X if solved else np.nan,  # EUR
             "w_L": v.w_L.X if solved else np.nan,  # EUR
             "W": v.w_G.X + v.w_L.X if solved else np.nan,  # EUR
+            "tau_L": 1 - sim.contract.tau,  # the load's bargaining power
         }
+
+        row.update(self.earnings_percentiles())  # [Risk aversion fan charts]
+
+        E_G = float(p @ self.scen["E_G_MWh"].to_numpy())  # expected production, MWh
+        E_L = float(p @ self.scen["E_L_MWh"].to_numpy())  # expected consumption, MWh
+        contract = self.model.dt * self.model.T * float(v.M.X) if solved else np.nan  # H * M*, MWh
+        row.update(
+            {
+                "load_mw": sim.buyer.load_mw,  # the swept parameter (skip if already in row)
+                "solar_mw": sim.generator.solar_mw,
+                "E_G_MWh": E_G,
+                "E_L_MWh": E_L,
+                "energy_ratio": E_L / E_G,  # > 1: the load is bigger in energy
+                "contract_MWh": contract,
+                "hedge_share_G": 100 * contract / E_G,  # % of production sold on the contract
+                "hedge_share_L": 100 * contract / E_L,  # % of consumption bought on the contract
+            }
+        )
 
         path = Path(self.cfg.paths.results) / f"sweep_{self.cfg.sweep_name}.csv"
         # mode="a" appends; the header is written only when the file is created by the first run

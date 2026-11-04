@@ -35,14 +35,16 @@ class DataVisualizer:
 
         self.out_dir = Path(self.cfg.paths.results) / self.cfg.simulations.label
 
-        if not self.has_solution:
-            log.warning("Vasiliki there is no solution, so I will be skipping the plots")
-            return
-
         self.read_results()
         self.plot_earnings_G_over_time()
         self.plot_earnings_G_per_scenario()
         self.plot_surplus_vs_M()  
+        self.plot_positions() 
+
+        if not self.has_solution:
+                    log.warning("Vasiliki there is no solution, so I will be skipping the plots")
+                    return
+        
 
     def read_results(self) -> None:
         """Load the values created in DataExporter.postprocess()"""
@@ -151,6 +153,30 @@ class DataVisualizer:
         fig.tight_layout(rect=[0, 0.03, 1, 1])  # leave room at the bottom for the legend
         self.save(fig, "surplus_vs_M")
 
+    def plot_positions(self) -> None:
+        """[Task 2] Generator production vs. load consumption per scenario, with the contracted energy."""
+        pos = pd.read_csv(self.out_dir / "scenarios.csv", index_col="scenario").sort_values("E_G_MWh")
+
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        idx = np.arange(len(pos))  # bar positions
+        w = 0.36  # two bars per scenario, as in the notebook
+        ax.bar(idx - w / 2, pos["E_G_MWh"], width=w, color=BLUE, label="generator production", zorder=3)
+        ax.bar(idx + w / 2, pos["E_L_MWh"], width=w, color=ORANGE, label="load consumption", zorder=3)
+
+        # Contracted energy: in weeks where it is above the blue bar, the generator buys the shortfall at spot
+        if "contract_MWh" in pos.columns:
+            ax.axhline(pos["contract_MWh"].iloc[0], color=GRAY, linestyle="--", linewidth=1.2,
+                       label="contracted baseload H·M*", zorder=4)
+
+        ax.set_xticks(idx)
+        ax.set_xticklabels(pos.index, rotation=45)
+        ax.set_ylabel("Energy over the horizon (MWh)")
+        ax.set_xlabel("Scenario (sorted by production)")
+        ax.set_title(f"Energy positions per scenario ({self.cfg.simulations.label})", loc="left", fontsize=11)
+        ax.legend(frameon=False, loc="upper left")
+        fig.tight_layout()
+        self.save(fig, "positions")
+
     def save(self, fig, name: str) -> None:
         """Save as results/<label>/<name>.png (replaces the notebook's plt.show()) and free the memory."""
         out_path = self.out_dir / f"{name}.png"
@@ -211,4 +237,158 @@ class SweepHeatmapCallback(Callback):
         M_grid = table.pivot(index="beta_G", columns="beta_L", values="M")
 
         plot_beta_heatmaps(S_grid, M_grid, self.plot_path)
+        log.info(f"Saved {self.plot_path}")
+
+def plot_tau_lines(table, x, x_label, out_path) -> None:
+    """[Task 1] Contract volume (top) and strike price (bottom) as a function of a bargaining power.
+
+    table: one row per run (from DataExporter.sweep_row), sorted by x.
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+    style = {"color": GRAY, "linewidth": 1.8, "marker": "o", "markersize": 3.5, "zorder": 3}
+
+    # 1st graph: volume
+    axes[0].plot(table[x], table["M"], **style)
+    axes[0].set_ylabel("M* (MW)")
+    axes[0].set_title("Contract volume M* (risk aversion as in the base case)", loc="left", fontsize=11)
+
+    # 2nd graph: strike price
+    axes[1].plot(table[x], table["S"], **style)
+    axes[1].set_ylabel("S* (EUR/MWh)")
+    axes[1].set_title("Strike price S* (risk aversion as in the base case)", loc="left", fontsize=11)
+    axes[1].set_xlabel(x_label)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+class SweepLineCallback(Callback):
+    """[Task 1] Hydra calls this before the first and after the last run of a one-parameter sweep.
+
+    Draws plot_tau_lines once for every column in x, each with its own label, from the same sweep table:
+    results/<sweep_name>_lines_<x>.png
+    Registered in config/sweep/tau.yaml under hydra.callbacks.
+    The callback runs in the folder the command was started from (the repo root), so results/ is relative.
+    """
+
+    def __init__(self, sweep_name: str, x, x_label) -> None:
+        self.sweep_name = sweep_name
+        self.x = list(x)  # columns for the horizontal axis, e.g. ["tau", "tau_L"]
+        self.x_label = list(x_label)  # one label per column, in the same order
+        self.table_path = Path("results") / f"sweep_{sweep_name}.csv"  # filled by DataExporter.sweep_row()
+
+    def on_multirun_start(self, config, **kwargs) -> None:
+        self.table_path.unlink(missing_ok=True)  # start from an empty table
+
+    def on_multirun_end(self, config, **kwargs) -> None:
+        table = pd.read_csv(self.table_path)
+        for x, x_label in zip(self.x, self.x_label):  # one figure per perspective
+            out_path = Path("results") / f"{self.sweep_name}_lines_{x}.png"
+            plot_tau_lines(table.sort_values(x), x, x_label, out_path)
+            log.info(f"Saved {out_path}")
+
+
+def plot_earnings_fan(table, x, x_label, out_path) -> None:
+    """[Risk aversion fan charts] Each side's earnings over the scenarios, against one swept parameter.
+
+    Line: median. Dark band: P25-P75. Light band: P5-P95. Dotted: P5, P50, P95 without a contract.
+    table: one row per run (from DataExporter.sweep_row), sorted by x.
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(5, 7), sharex=True)
+    panels = [(axes[0], "G", BLUE, "Generator earnings (MEUR)"), (axes[1], "L", ORANGE, "Load earnings (MEUR)")]
+
+    for ax, side, color, ylabel in panels:
+        ax.fill_between(table[x], table[f"{side}_p5"], table[f"{side}_p95"], color=color, alpha=0.2,
+                        linewidth=0, label="P5–P95", zorder=2)
+        ax.fill_between(table[x], table[f"{side}_p25"], table[f"{side}_p75"], color=color, alpha=0.45,
+                        linewidth=0, label="P25–P75", zorder=3)
+        ax.plot(table[x], table[f"{side}_p50"], color=color, linewidth=2, label="median", zorder=4)
+
+        # Without a contract: the same in every run, so the first row is enough
+        for q in [5, 50, 95]:
+            ax.axhline(table[f"{side}_nc_p{q}"].iloc[0], color=GRAY, linestyle=":", linewidth=1, zorder=1,
+                       label="no contract (P5, P50, P95)" if q == 5 else None)
+        ax.set_ylabel(ylabel)
+        ax.legend(frameon=False, loc="best", fontsize=8)
+
+    axes[0].set_title("Baseload", fontsize=11)
+    axes[1].set_xlabel(x_label)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+class SweepFanCallback(Callback):
+    """[Risk aversion fan charts] Hydra calls this before the first and after the last run of a sweep.
+
+    Draws results/<sweep_name>_earnings_vs_<x>.png from results/sweep_<sweep_name>.csv.
+    fixed: keep only the runs with these values, e.g. {"beta_G": 0.5} selects one row of the beta grid.
+    The callback runs in the folder the command was started from (the repo root), so results/ is relative.
+    """
+
+    def __init__(self, sweep_name: str, x: str, x_label: str, fixed=None) -> None:
+        self.x = x  # column of the sweep table on the horizontal axis, e.g. "beta_L"
+        self.x_label = x_label
+        self.fixed = dict(fixed or {})  # e.g. {"beta_G": 0.5}
+        self.table_path = Path("results") / f"sweep_{sweep_name}.csv"  # filled by DataExporter.sweep_row()
+        self.plot_path = Path("results") / f"{sweep_name}_earnings_vs_{x}.png"
+
+    def on_multirun_start(self, config, **kwargs) -> None:
+        self.table_path.unlink(missing_ok=True)  # start from an empty table
+
+    def on_multirun_end(self, config, **kwargs) -> None:
+        table = pd.read_csv(self.table_path)
+        for column, value in self.fixed.items():  # keep one slice of the grid
+            table = table[np.isclose(table[column], value)]
+        plot_earnings_fan(table.sort_values(self.x), self.x, self.x_label, self.plot_path)
+        log.info(f"Saved {self.plot_path}")
+
+def plot_position_sweep(table, x, x_label, out_path) -> None:
+    """[Task 2] Average energy positions (top) and the shares hedged (bottom) against one swept parameter."""
+    fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+    style = {"linewidth": 1.8, "marker": "o", "markersize": 3.5, "zorder": 3}
+
+    # A. Who is bigger: production, consumption and the energy fixed by the contract
+    ax = axes[0]
+    ax.plot(table[x], table["E_G_MWh"], color=BLUE, label="generator production", **style)
+    ax.plot(table[x], table["E_L_MWh"], color=ORANGE, label="load consumption", **style)
+    ax.plot(table[x], table["contract_MWh"], color=GRAY, linestyle="--", label="contracted H·M*", **style)
+    ax.set_ylabel("Energy over the horizon (MWh)")
+    ax.set_title("A. Energy positions (average over scenarios)", loc="left", fontsize=11)
+    ax.legend(frameon=False, loc="upper left")
+
+    # B. How much of each position the contract covers (100% = the whole position)
+    ax = axes[1]
+    ax.plot(table[x], table["hedge_share_G"], color=BLUE, label="share of production sold", **style)
+    ax.plot(table[x], table["hedge_share_L"], color=ORANGE, label="share of consumption bought", **style)
+    ax.axhline(100, color=GRAY, linestyle=":", linewidth=1, zorder=2)  # above: more than the whole position
+    ax.set_ylabel("Hedged (%)")
+    ax.set_title("B. Share of each position covered by the contract", loc="left", fontsize=11)
+    ax.legend(frameon=False, loc="upper right")
+    ax.set_xlabel(x_label)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+class SweepPositionCallback(Callback):
+    """[Task 2] Hydra calls this before the first and after the last run of the load-size sweep.
+
+    Draws results/<sweep_name>_positions.png from results/sweep_<sweep_name>.csv.
+    The callback runs in the folder the command was started from (the repo root), so results/ is relative.
+    """
+
+    def __init__(self, sweep_name: str, x: str, x_label: str) -> None:
+        self.x = x  # column of the sweep table on the horizontal axis, e.g. "load_mw"
+        self.x_label = x_label
+        self.table_path = Path("results") / f"sweep_{sweep_name}.csv"  # filled by DataExporter.sweep_row()
+        self.plot_path = Path("results") / f"{sweep_name}_positions.png"
+
+    def on_multirun_start(self, config, **kwargs) -> None:
+        self.table_path.unlink(missing_ok=True)  # start from an empty table
+
+    def on_multirun_end(self, config, **kwargs) -> None:
+        table = pd.read_csv(self.table_path).sort_values(self.x)
+        plot_position_sweep(table, self.x, self.x_label, self.plot_path)
         log.info(f"Saved {self.plot_path}")

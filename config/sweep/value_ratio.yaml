@@ -1,0 +1,19 @@
+# @package _global_
+# Value ratio and preferred volumes for several load sizes, and the effect of the load's risk aversion.
+# 7 load sizes x 3 values of beta_L (beta_G stays at its default) = 21 runs.
+# Run with:  uv run main.py --multirun +sweep=value_ratio
+sweep_name: value_ratio
+
+simulations:
+  label: load${simulations.buyer.load_mw}_bL${simulations.cvar.buyer.beta}
+
+hydra:
+  sweeper:
+    params:
+      simulations.buyer.load_mw: 3,4,5,6,7,8,10,15,20
+      simulations.cvar.buyer.beta: 0.2,0.5,0.8
+  callbacks:
+    sweep_plots:
+      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepCallback
+      sweep_name: value_ratio
+      plots: [ratios]

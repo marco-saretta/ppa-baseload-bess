@@ -1,0 +1,23 @@
+# @package _global_
+# Sweeping the bargaining power tau of the generator: 11 runs.
+# Run with:  uv run main.py --multirun +sweep=tau
+
+# Marks the runs as part of this sweep: the exporter adds one row per run to results/sweep_tau.csv
+sweep_name: tau
+
+# Each run gets its own label, e.g. tau0.3
+simulations:
+  label: tau${simulations.contract.tau}
+
+hydra:
+  # The values to run
+  sweeper:
+    params:
+      simulations.contract.tau: 0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9
+  # Draws the line plots after the last run
+  callbacks:
+    tau_lines:
+      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepLineCallback
+      sweep_name: tau
+      x: [tau, tau_L]
+      x_label: [Bargaining power of the generator τ, Bargaining power of the load (1 - τ)]

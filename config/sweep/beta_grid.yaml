@@ -17,6 +17,18 @@ hydra:
       simulations.cvar.buyer.beta: 0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9
   # Code that Hydra calls before the first run and after the last one
   callbacks:
-    beta_heatmaps:
+    heatmaps:
       _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepHeatmapCallback
       sweep_name: beta_grid
+    fan_load:
+      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepFanCallback
+      sweep_name: beta_grid
+      x: beta_L
+      x_label: Load risk aversion A_L
+      fixed: {beta_G: 0.5}
+    fan_gen:
+      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepFanCallback
+      sweep_name: beta_grid
+      x: beta_G
+      x_label: Generator risk aversion A_G
+      fixed: {beta_L: 0.5}

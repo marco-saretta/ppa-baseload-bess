@@ -1,0 +1,18 @@
+# @package _global_
+# Sweeping the average load of the buyer, with the solar plant fixed: 7 runs.
+# Run with:  uv run main.py --multirun +sweep=load_size
+sweep_name: load_size
+
+simulations:
+  label: load${simulations.buyer.load_mw}
+
+hydra:
+  sweeper:
+    params:
+      simulations.buyer.load_mw: 5,10,15,20,25,30,40
+  callbacks:
+    positions:
+      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepPositionCallback
+      sweep_name: load_size
+      x: load_mw
+      x_label: Average load of the buyer (MW)
