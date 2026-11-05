@@ -1,8 +1,0 @@
-# Sensitivity: more bargaining power for the generator
-defaults:
-  - default
-  - _self_
-
-label: sens_tau_07
-contract:
-  tau: 0.7

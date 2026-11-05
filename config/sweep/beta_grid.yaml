@@ -20,15 +20,15 @@ hydra:
     heatmaps:
       _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepHeatmapCallback
       sweep_name: beta_grid
-    fan_load:
-      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepFanCallback
-      sweep_name: beta_grid
-      x: beta_L
-      x_label: Load risk aversion A_L
-      fixed: {beta_G: 0.5}
-    fan_gen:
-      _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepFanCallback
-      sweep_name: beta_grid
-      x: beta_G
-      x_label: Generator risk aversion A_G
-      fixed: {beta_L: 0.5}
+    # fan_load:
+    #   _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepFanCallback
+    #   sweep_name: beta_grid
+    #   x: beta_L
+    #   x_label: Load risk aversion A_L
+    #   fixed: {beta_G: 0.5}
+    # fan_gen:
+    #   _target_: ppa_baseload_bess.data_ops.data_visualizer.SweepFanCallback
+    #   sweep_name: beta_grid
+    #   x: beta_G
+    #   x_label: Generator risk aversion A_G
+    #   fixed: {beta_L: 0.5}

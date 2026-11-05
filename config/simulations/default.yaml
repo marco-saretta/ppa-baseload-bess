@@ -24,7 +24,7 @@ generator:
 
 # Average load of the buyer of the PPA (MW).
 buyer:
-  load_mw: 20
+  load_mw: 5.9
 
 # --- CONTRACT -----------------------------------------------------------------
 

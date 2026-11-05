@@ -40,6 +40,7 @@ class DataVisualizer:
         self.plot_earnings_G_per_scenario()
         self.plot_surplus_vs_M()  
         self.plot_positions() 
+        self.plot_preferences() 
 
         if not self.has_solution:
                     log.warning("Vasiliki there is no solution, so I will be skipping the plots")
@@ -176,6 +177,47 @@ class DataVisualizer:
         ax.legend(frameon=False, loc="upper left")
         fig.tight_layout()
         self.save(fig, "positions")
+
+    def plot_preferences(self) -> None:
+        """[Task 3] Tail risk R_i(M) = CVaR - E of each party against the volume; the peak is its preferred volume.
+
+        Two panels with their own scale: the load's R is usually much larger than the generator's.
+        """
+        R = pd.read_csv(self.out_dir / "preferences.csv", index_col="M")
+        s = pd.read_csv(self.out_dir / "value_ratio.csv", index_col="key").iloc[:, 0]
+        M_star = None
+        if self.has_solution:
+            M_star = pd.read_csv(self.out_dir / "plot_summary.csv", index_col="key").iloc[:, 0]["M"]
+
+        fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
+        panels = [(axes[0], "G", "Generator", BLUE), (axes[1], "L", "Load", ORANGE)]
+        for ax, side, name, color in panels:
+            ax.plot(R.index, R[f"R_{side}"], color=color, linewidth=2, zorder=3)
+
+            # Preferred volume: marker at the peak; a band if the top is flat
+            low, high, height = s[f"M_pref_{side}"], s[f"M_pref_{side}_high"], s[f"R_{side}_at_pref"]
+            if high > low:
+                ax.axvspan(low, high, color=color, alpha=0.12, zorder=1)
+            ax.scatter([low], [height], color=color, s=60, edgecolor="white", zorder=4)
+            ax.text(low, height, f"  preferred M = {low:.2f} MW", va="bottom", fontsize=9)
+
+            # Agreed volume of this run
+            if M_star is not None:
+                ax.axvline(M_star, color=GRAY, linestyle="--", linewidth=1.2, zorder=2,
+                           label=f"agreed M* = {M_star:.2f} MW")
+                ax.legend(frameon=False, loc="lower left")
+
+            ax.set_ylabel(f"R_{side}(M) = CVaR − E (kEUR)")
+            ax.set_title(f"{name}: tail risk vs. contract volume (closer to 0 = less risk)", loc="left", fontsize=11)
+
+        axes[1].set_xlabel("Baseload volume M (MW)")
+        fig.suptitle(
+            f"Preferred volumes ({self.cfg.simulations.label}): ER = {s['energy_ratio']:.2f}, VR = {s['value_ratio']:.2f}, "
+            f"capture prices G / L = {s['capture_G']:.1f} / {s['capture_L']:.1f} EUR/MWh",
+            fontsize=11,
+        )
+        fig.tight_layout()
+        self.save(fig, "preferences")
 
     def save(self, fig, name: str) -> None:
         """Save as results/<label>/<name>.png (replaces the notebook's plt.show()) and free the memory."""
@@ -392,3 +434,107 @@ class SweepPositionCallback(Callback):
         table = pd.read_csv(self.table_path).sort_values(self.x)
         plot_position_sweep(table, self.x, self.x_label, self.plot_path)
         log.info(f"Saved {self.plot_path}")
+
+def value_ratio_display(table):
+    """[Task 3] The small table of step 5: one row per load size, the agreed M* for each beta_L as columns.
+
+    Only selects, reshapes and rounds for display: every number comes from DataExporter.
+    """
+    one_per_load = table.drop_duplicates("load_mw").set_index("load_mw").sort_index()  # ratios don't depend on beta_L
+    agreed = table.pivot(index="load_mw", columns="beta_L", values="M")  # rows: load, columns: beta_L
+    agreed.columns = [f"M* (β_L={b})" for b in agreed.columns]
+    display = pd.concat(
+        [one_per_load[["energy_ratio", "value_ratio", "M_pref_G", "M_pref_L"]], agreed, one_per_load[["case"]]],
+        axis=1,
+    ).rename(columns={"energy_ratio": "ER", "value_ratio": "VR", "M_pref_G": "M_pref G", "M_pref_L": "M_pref L"})
+    display.index.name = "Load (MW)"
+    return display.round(2)
+
+
+def plot_value_ratio_table(display, beta_G, out_path) -> None:
+    """[Task 3] Draw the step-5 table as an image."""
+    fig, ax = plt.subplots(figsize=(11, 0.45 * len(display) + 1.2))
+    ax.axis("off")  # a table, not a chart
+    cells = ax.table(
+        cellText=display.reset_index().values,
+        colLabels=[display.index.name, *display.columns],
+        loc="center",
+        cellLoc="center",
+    )
+    cells.auto_set_font_size(False)
+    cells.set_fontsize(9)
+    cells.scale(1, 1.3)  # a little more height per row
+    ax.set_title(f"Value ratio and preferred volumes (β_G = {beta_G})", loc="left", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_value_ratio(table, out_path) -> None:
+    """[Task 3] A: energy and value ratio vs. load size. B: preferred and agreed volumes vs. load size."""
+    one_per_load = table.drop_duplicates("load_mw").sort_values("load_mw")
+    style = {"linewidth": 1.8, "marker": "o", "markersize": 3.5, "zorder": 3}
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 9), sharex=True)
+
+    # A. Who is bigger, in MWh and in EUR; the gap is the effect of the solar profile
+    ax = axes[0]
+    ax.plot(one_per_load["load_mw"], one_per_load["energy_ratio"], color=GRAY, label="energy ratio ER", **style)
+    ax.plot(one_per_load["load_mw"], one_per_load["value_ratio"], color="#0b0b0b", label="value ratio VR", **style)
+    ax.axhline(1, color=GRAY, linestyle=":", linewidth=1, zorder=2)  # equal size
+    ax.set_ylabel("Load / generator")
+    ax.set_title("A. Energy ratio vs. value ratio", loc="left", fontsize=11)
+    ax.legend(frameon=False, loc="upper left")
+
+    # B. Each party's preferred volume, and the agreed volume for each beta_L
+    ax = axes[1]
+    ax.plot(one_per_load["load_mw"], one_per_load["M_pref_G"], color=BLUE, label="generator's preferred M", **style)
+    ax.plot(one_per_load["load_mw"], one_per_load["M_pref_L"], color=ORANGE, label="load's preferred M", **style)
+    grays = ["#b4b2a9", "#52514e", "#0b0b0b"]  # light -> dark: low -> high beta_L
+    for (beta_L, group), color in zip(table.sort_values("load_mw").groupby("beta_L"), grays):
+        ax.plot(group["load_mw"], group["M"], color=color, linestyle="--", linewidth=1.4, marker="s",
+                markersize=3.5, label=f"agreed M*, β_L = {beta_L}", zorder=4)
+    ax.set_xlabel("Average load of the buyer (MW)")
+    ax.set_ylabel("Baseload volume (MW)")
+    ax.set_title("B. Preferred volumes and the agreed volume", loc="left", fontsize=11)
+    ax.legend(frameon=False, loc="upper left", fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+class ValueRatioCallback(Callback):
+    """[Task 3] Hydra calls this before the first and after the last run of the value-ratio sweep.
+
+    Draws results/<name>.png and results/<name>_table.png, prints the table in the log,
+    and reports the exporter's checks.
+    The callback runs in the folder the command was started from (the repo root), so results/ is relative.
+    """
+
+    def __init__(self, sweep_name: str) -> None:
+        self.table_path = Path("results") / f"sweep_{sweep_name}.csv"  # filled by DataExporter.sweep_row()
+        self.plot_path = Path("results") / f"{sweep_name}.png"
+        self.table_plot_path = Path("results") / f"{sweep_name}_table.png"
+
+    def on_multirun_start(self, config, **kwargs) -> None:
+        self.table_path.unlink(missing_ok=True)  # start from an empty table
+
+    def on_multirun_end(self, config, **kwargs) -> None:
+        table = pd.read_csv(self.table_path)
+
+        display = value_ratio_display(table)
+        log.info("Value ratio table:\n" + display.to_string())
+        plot_value_ratio_table(display, table["beta_G"].iloc[0], self.table_plot_path)
+        log.info(f"Saved {self.table_plot_path}")
+
+        plot_value_ratio(table, self.plot_path)
+        log.info(f"Saved {self.plot_path}")
+
+        # Step-5 checks written by the exporter
+        if not table["M_between_prefs"].dropna().astype(bool).all():
+            log.warning(f"Some agreed volumes lie outside the preferred range: see {self.table_path}")
+        if not table["VR_agrees_with_prefs"].astype(bool).all():
+            log.warning("VR and the preferred volumes disagree for some loads (expected only near VR = 1)")
+        if table[["M_pref_G_at_edge", "M_pref_L_at_edge"]].to_numpy().any():
+            log.warning("Some preferred volumes are at the edge of the M grid: widen the grid")

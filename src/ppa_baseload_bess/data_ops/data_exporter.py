@@ -19,8 +19,10 @@ STATUS_NAMES = {
     GRB.UNBOUNDED: "UNBOUNDED",
     GRB.TIME_LIMIT: "TIME_LIMIT",
     GRB.SUBOPTIMAL: "SUBOPTIMAL",
-}
+    }
 
+N_GRID = 401  # [Task 3] number of baseload volumes M tried for the preferred volumes
+VR_TOL = 0.1  # [Task 3] a value ratio within 1 +/- VR_TOL counts as "VR ~ 1"
 
 class DataExporter:
     """Write the results of a model run to results/<label>/:
@@ -54,6 +56,7 @@ class DataExporter:
         self.export_iis()
         self.postprocess()
         self.sweep_M()
+        self.compute_value_ratio()  # needs no solution; used by sweep_row()
         self.sweep_row()
         log.info(f"Exported results to {self.out_dir}")
 
@@ -121,14 +124,15 @@ class DataExporter:
             df = df.join(self.per_scenario)
             df["gain_G"] = df["profit_G"] - df["profit_G_no_contract"]
             df["gain_L"] = df["profit_L"] - df["profit_L_no_contract"]
-            # [Task 2] Energy positions per scenario, MWh over the horizon
-            df["E_G_MWh"] = model.dt * model.P_G.sum(axis=0)  # generator production: sold at spot without a contract
-            df["E_L_MWh"] = model.dt * model.P_L.sum(axis=0)  # load consumption: bought at spot without a contract
-            if self.has_solution:
-                df["contract_MWh"] = model.dt * model.T * float(model.v.M.X)  # H * M*: the same in every scenario
-                df["net_G_MWh"] = df["E_G_MWh"] - df["contract_MWh"]  # < 0: the generator is short that week
-                df["net_L_MWh"] = df["E_L_MWh"] - df["contract_MWh"]  # < 0: the load has more than it needs
-            self.scen = df  # [Task 2] kept for the averages in sweep_row()
+
+        # [Task 2] Energy positions per scenario, MWh over the horizon (data: always available)
+        df["E_G_MWh"] = model.dt * model.P_G.sum(axis=0)  # generator production: sold at spot without a contract
+        df["E_L_MWh"] = model.dt * model.P_L.sum(axis=0)  # load consumption: bought at spot without a contract
+        if self.has_solution:
+            df["contract_MWh"] = model.dt * model.T * float(model.v.M.X)  # H * M*: the same in every scenario
+            df["net_G_MWh"] = df["E_G_MWh"] - df["contract_MWh"]  # < 0: the generator is short that week
+            df["net_L_MWh"] = df["E_L_MWh"] - df["contract_MWh"]  # < 0: the load has more than it needs
+
         df.index.name = "scenario"
         df.to_csv(self.out_dir / "scenarios.csv")
 
@@ -275,55 +279,164 @@ class DataExporter:
                 out[f"{side}_nc_p{q}"] = nc
         return out
 
+    def compute_value_ratio(self) -> None:
+        """[Task 3] Value ratio, capture prices and each party's preferred volume. No solver needed.
+
+        preferences.csv  index M (MW); R_G, R_L = CVaR - E of each side's profit, kEUR
+        value_ratio.csv  key/value, numbers only: energies, values, capture prices, ER, VR,
+                         preferred volumes (with the end of a flat top), marker heights
+        """
+        model, p = self.model, self.model.p
+        sim = self.cfg.simulations
+        alpha_G, alpha_L = sim.cvar.generator.alpha, sim.cvar.buyer.alpha
+
+        # Steps 1-3: exposure in value and in energy, per scenario, then expectations and ratios
+        V_G = model.rev_G  # EUR: generator's spot revenue
+        V_L = -model.cost_L  # EUR: load's spot cost (cost_L is stored as a negative profit)
+        E_G = model.dt * model.P_G.sum(axis=0)  # MWh produced
+        E_L = model.dt * model.P_L.sum(axis=0)  # MWh consumed
+        EV_G, EV_L = float(p @ V_G), float(p @ V_L)
+        EE_G, EE_L = float(p @ E_G), float(p @ E_L)
+        self.vr = {
+            "E_G_MWh": EE_G,
+            "E_L_MWh": EE_L,
+            "V_G_kEUR": EV_G / 1e3,
+            "V_L_kEUR": EV_L / 1e3,
+            "capture_G": EV_G / EE_G,  # EUR/MWh: the price the generator's energy earns
+            "capture_L": EV_L / EE_L,  # EUR/MWh: the price the load's energy costs
+            "energy_ratio": EE_L / EE_G,  # who is bigger in MWh
+            "value_ratio": EV_L / EV_G,  # who is bigger in EUR = energy_ratio * capture_L / capture_G
+        }
+
+        # Step 4: R_i(M) = CVaR - E on a grid of M. The strike drops out, so S = 0:
+        #   profit_G = rev_G  - M * dt * spot_sum      profit_L = cost_L + M * dt * spot_sum
+        M_max = max(2.0 * sim.buyer.load_mw, 0.5 * sim.generator.solar_mw)  # wide enough for both peaks
+        grid = np.linspace(0, M_max, N_GRID)
+        step = grid[1]  # MW between two grid points
+
+        rows = []
+        for M in grid:
+            profit_G = model.rev_G - M * model.dt * model.spot_sum  # (S,)
+            profit_L = model.cost_L + M * model.dt * model.spot_sum  # (S,)
+            rows.append(
+                {
+                    "M": M,
+                    "R_G": cvar(profit_G, p, alpha_G) - float(p @ profit_G),
+                    "R_L": cvar(profit_L, p, alpha_L) - float(p @ profit_L),
+                }
+            )
+        R = pd.DataFrame(rows).set_index("M") / 1e3  # EUR -> kEUR (the index M is not divided)
+        R.to_csv(self.out_dir / "preferences.csv")
+
+        # Preferred volume: where R is highest. R is piecewise linear, so its top can be flat: keep both ends.
+        self.vr["M_grid_step"] = step
+        for side in ["G", "L"]:
+            column = R[f"R_{side}"]
+            is_best = np.isclose(column, column.max(), rtol=1e-9, atol=1e-6)
+            low, high = column.index[is_best].min(), column.index[is_best].max()
+            self.vr[f"M_pref_{side}"] = low  # smallest preferred volume (a grid point)
+            self.vr[f"M_pref_{side}_high"] = high  # largest preferred volume
+            self.vr[f"R_{side}_at_pref"] = column.loc[low]  # marker height in preferences.png
+            at_edge = high >= grid[-1] - step / 2
+            self.vr[f"M_pref_{side}_at_edge"] = float(at_edge)  # 1 = the peak may lie beyond the grid
+            if at_edge:
+                log.warning(f"Preferred volume of {side} at the edge of the M grid ({high:.1f} MW): widen the grid")
+
+        summary = pd.Series(self.vr, name="value", dtype=float)  # numbers only
+        summary.index.name = "key"
+        summary.to_csv(self.out_dir / "value_ratio.csv")
+
     def sweep_row(self) -> None:
         """Add this run's key results as one row to results/sweep_<name>.csv (only for sweep runs).
 
-        The file lives in results/ itself, not in the run's folder, so it collects all runs of the sweep.
-        Hydra runs the jobs one after the other, so appending a row is safe."""
-        
+        Every run writes the same columns (NaN when there is no solution), so the rows of solved
+        and unsolved runs line up under the header written by the first run.
+        """
         if "sweep_name" not in self.cfg:
             return  # a normal run, not part of a sweep
 
-        m, v, sim = self.model.m, self.model.v, self.cfg.simulations
-        p = self.model.p 
+        sim, v = self.cfg.simulations, self.model.v
         solved = self.has_solution
-        row = {
-            # the settings of this run
-            "beta_G": sim.cvar.generator.beta,
-            "beta_L": sim.cvar.buyer.beta,
-            "alpha_G": sim.cvar.generator.alpha,
-            "alpha_L": sim.cvar.buyer.alpha,
-            "tau": sim.contract.tau,
-            # the outcome (NaN when there is no solution -> grey square)
-            "status": STATUS_NAMES.get(m.Status, "OTHER"),
-            "S": float(v.S.X) if solved else np.nan,  # EUR/MWh
-            "M": float(v.M.X) if solved else np.nan,  # MW
-            "w_G": v.w_G.X if solved else np.nan,  # EUR
-            "w_L": v.w_L.X if solved else np.nan,  # EUR
-            "W": v.w_G.X + v.w_L.X if solved else np.nan,  # EUR
-            "tau_L": 1 - sim.contract.tau,  # the load's bargaining power
-        }
+        H = self.model.dt * self.model.T  # hours in the horizon
 
-        row.update(self.earnings_percentiles())  # [Risk aversion fan charts]
+        # The contract of this run, read once (NaN without a solution)
+        S = float(v.S.X) if solved else np.nan  # EUR/MWh
+        M = float(v.M.X) if solved else np.nan  # MW
+        w_G = v.w_G.X if solved else np.nan  # EUR
+        w_L = v.w_L.X if solved else np.nan  # EUR
+        contract = H * M  # MWh fixed by the contract (NaN without a solution)
 
-        E_G = float(p @ self.scen["E_G_MWh"].to_numpy())  # expected production, MWh
-        E_L = float(p @ self.scen["E_L_MWh"].to_numpy())  # expected consumption, MWh
-        contract = self.model.dt * self.model.T * float(v.M.X) if solved else np.nan  # H * M*, MWh
+        row = {}
+
+        # Settings of this run
         row.update(
             {
-                "load_mw": sim.buyer.load_mw,  # the swept parameter (skip if already in row)
+                "status": STATUS_NAMES.get(self.model.m.Status, "OTHER"),
+                "beta_G": sim.cvar.generator.beta,
+                "beta_L": sim.cvar.buyer.beta,
+                "alpha_G": sim.cvar.generator.alpha,
+                "alpha_L": sim.cvar.buyer.alpha,
+                "tau": sim.contract.tau,  # [Task 1] the generator's bargaining power
+                "tau_L": 1 - sim.contract.tau,  # [Task 1] the load's bargaining power
+                "load_mw": sim.buyer.load_mw,  # [Tasks 2, 3]
                 "solar_mw": sim.generator.solar_mw,
-                "E_G_MWh": E_G,
-                "E_L_MWh": E_L,
-                "energy_ratio": E_L / E_G,  # > 1: the load is bigger in energy
-                "contract_MWh": contract,
-                "hedge_share_G": 100 * contract / E_G,  # % of production sold on the contract
-                "hedge_share_L": 100 * contract / E_L,  # % of consumption bought on the contract
             }
         )
 
+        # The contract and the gains (all tasks)
+        row.update({"S": S, "M": M, "w_G": w_G, "w_L": w_L, "W": w_G + w_L})
+
+        # [Fan charts] distribution of each side's earnings over the scenarios
+        row.update(self.earnings_percentiles())
+
+        # [Tasks 2, 3] energies, values, ratios and preferred volumes (from compute_value_ratio)
+        row.update(self.vr)
+
+        # [Task 2] how much of each position the contract covers
+        row.update(
+            {
+                "contract_MWh": contract,
+                "hedge_share_G": 100 * contract / self.vr["E_G_MWh"],  # % of production sold
+                "hedge_share_L": 100 * contract / self.vr["E_L_MWh"],  # % of consumption bought
+            }
+        )
+
+        # [Task 3] the checks of step 5
+        row.update(self.value_ratio_checks(M))
+
+        self.append_row(row)
+
+    def value_ratio_checks(self, M: float) -> dict:
+        """[Task 3] The checks of step 5 (text and True/False, so they go to the sweep table only)."""
+        vr = self.vr["value_ratio"]
+        pref_G, pref_L = self.vr["M_pref_G"], self.vr["M_pref_L"]
+
+        # Which of the three cases this load size falls in
+        if vr < 1 - VR_TOL:
+            case = "VR<1"
+        elif vr > 1 + VR_TOL:
+            case = "VR>1"
+        else:
+            case = "VR~1"
+
+        # The agreed M should lie between the two preferred volumes (one grid step of tolerance)
+        step = self.vr["M_grid_step"]
+        low = min(pref_G, pref_L) - step
+        high = max(self.vr["M_pref_G_high"], self.vr["M_pref_L_high"]) + step
+        between = bool(low <= M <= high) if not np.isnan(M) else np.nan  # NaN without a solution
+
+        return {
+            "case": case,
+            "VR_agrees_with_prefs": bool((vr > 1) == (pref_L > pref_G)),  # VR is a shortcut: is it right?
+            "M_between_prefs": between,
+        }
+
+    def append_row(self, row: dict) -> None:
+        """Append one row to results/sweep_<name>.csv; the first run of the sweep writes the header.
+
+        Hydra's default launcher runs the jobs one after the other, so appending is safe.
+        """
         path = Path(self.cfg.paths.results) / f"sweep_{self.cfg.sweep_name}.csv"
-        # mode="a" appends; the header is written only when the file is created by the first run
         pd.DataFrame([row]).to_csv(path, mode="a", header=not path.exists(), index=False)
 
     @staticmethod
